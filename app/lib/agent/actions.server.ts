@@ -3,6 +3,7 @@ import db from "../../db.server";
 import { recordEvent } from "../shopify-data/events.server";
 import { validateToolArgs, runTool } from "./tools/registry";
 import { saveMemory } from "../memory/memory.server";
+import { calibrateConfidence, findRecentNegativeOutcome } from "../intelligence/learning.server";
 import type { AdminGraphqlClient } from "../shopify-data/client.server";
 import type { ContextSource } from "../context/types";
 
@@ -13,22 +14,47 @@ export type PrepareActionInput = {
   reasoning?: string;
   sourceRefs?: ContextSource[];
   actor: string;
+  baseConfidence?: number;
 };
 
+export type PrepareActionResult = {
+  action: Action;
+  /** Set when a prior attempt on the same target had a negative outcome (spec §10.1 #2) — surfaced, not blocked. */
+  filterWarning: string | null;
+};
+
+const DEFAULT_BASE_CONFIDENCE = 0.8;
+
 /** READ -> ANALYZE -> RECOMMEND -> PREPARE ACTION (spec §21). Validates args up front so a bad extraction never even reaches PENDING_APPROVAL. */
-export async function prepareAction(input: PrepareActionInput): Promise<Action> {
+export async function prepareAction(input: PrepareActionInput): Promise<PrepareActionResult> {
   if (!validateToolArgs(input.tool, input.arguments)) {
     throw new Error(`Invalid arguments for tool ${input.tool}`);
   }
+
+  // Learning mechanism (spec §10.1): calibrate confidence from this tool's
+  // historical success rate, and check whether this exact target already had
+  // a negative outcome recently.
+  const [{ confidence, note: calibrationNote }, recentNegative] = await Promise.all([
+    calibrateConfidence(input.shopId, input.tool, input.baseConfidence ?? DEFAULT_BASE_CONFIDENCE),
+    findRecentNegativeOutcome(input.shopId, input.tool, input.arguments),
+  ]);
+
+  const filterWarning = recentNegative
+    ? `This was already tried on ${recentNegative.executedAt.toDateString()} (action ${recentNegative.actionId}) and had a negative outcome — recommending against repeating it unless conditions have changed.`
+    : null;
+
+  const reasoningParts = [input.reasoning, calibrationNote, filterWarning].filter(Boolean);
+  const reasoning = reasoningParts.length ? reasoningParts.join(" ") : null;
 
   const action = await db.action.create({
     data: {
       shopId: input.shopId,
       tool: input.tool,
       arguments: input.arguments as Prisma.InputJsonValue,
-      reasoning: input.reasoning ?? null,
+      reasoning,
       sourceRefs: (input.sourceRefs ?? null) as Prisma.InputJsonValue,
       actor: input.actor,
+      confidence,
     },
   });
 
@@ -50,9 +76,9 @@ export async function prepareAction(input: PrepareActionInput): Promise<Action> 
       memoryType: "DECISION",
       entityType: "action",
       entityId: action.id,
-      content: `Decision: ${input.tool} — ${JSON.stringify(input.arguments)}. ${input.reasoning ?? ""}`.trim(),
+      content: `Decision: ${input.tool} — ${JSON.stringify(input.arguments)}. ${reasoning ?? ""}`.trim(),
       source: input.actor,
-      confidence: 0.8,
+      confidence,
       importance: 0.7,
       metadata: { tool: input.tool, status: action.status },
     });
@@ -60,7 +86,7 @@ export async function prepareAction(input: PrepareActionInput): Promise<Action> 
     console.error(`Failed to save decision memory for action ${action.id}:`, error);
   }
 
-  return action;
+  return { action, filterWarning };
 }
 
 async function claimAction(

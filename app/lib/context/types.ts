@@ -55,12 +55,12 @@ export type ContextPackage = {
   facts: StructuredFact[];
   metrics: Record<string, unknown>;
   events: Array<Record<string, unknown>>;
+  // General semantic memories (PRODUCT, CUSTOMER, MERCHANT_PREFERENCE, DOCUMENT, etc.) —
+  // INSIGHT/DECISION/OUTCOME memories are split out into their own fields below instead.
   memories: Array<Record<string, unknown>>;
-  // No producer exists yet for these (Phases 7/8+ introduce insights/decisions/outcomes);
-  // kept as stable empty arrays so callers don't need a breaking change later.
-  insights: unknown[];
-  decisions: unknown[];
-  outcomes: unknown[];
+  insights: Array<Record<string, unknown>>;
+  decisions: Array<Record<string, unknown>>;
+  outcomes: Array<Record<string, unknown>>;
   sources: ContextSource[];
 };
 

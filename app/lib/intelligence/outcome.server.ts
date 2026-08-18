@@ -2,6 +2,7 @@ import db from "../../db.server";
 import { getSalesMetrics, type SalesMetrics } from "../context/analytics.server";
 import { saveMemory } from "../memory/memory.server";
 import { recordEvent } from "../shopify-data/events.server";
+import { classifyOutcome, recordOutcomeStat } from "./learning.server";
 
 const DEFAULT_WINDOW_DAYS = 7;
 
@@ -41,10 +42,22 @@ export async function measureActionOutcome(
   const revenueChangePct =
     before.totalRevenue > 0 ? (after.totalRevenue - before.totalRevenue) / before.totalRevenue : null;
 
+  const outcomeClass = classifyOutcome(revenueChangePct);
+
   const impactDescription =
     revenueChangePct === null
       ? "no baseline revenue to compare against"
       : `revenue ${revenueChangePct >= 0 ? "up" : "down"} ${Math.abs(Math.round(revenueChangePct * 100))}%`;
+
+  await db.action.update({ where: { id: action.id }, data: { outcome: outcomeClass } });
+
+  // Strategy Reweighting (spec §10.1 #3) — this aggregate is what future
+  // RECOMMEND/REASON calls consult, never re-derived from raw outcomes each time.
+  try {
+    await recordOutcomeStat(shopId, action.tool, outcomeClass);
+  } catch (error) {
+    console.error(`Failed to update ActionOutcomeStat for action ${actionId}:`, error);
+  }
 
   // Embeddings-provider failure must not prevent the outcome from being
   // computed/returned/eventable — semantic searchability is an enhancement
@@ -55,11 +68,11 @@ export async function measureActionOutcome(
       memoryType: "OUTCOME",
       entityType: "action",
       entityId: action.id,
-      content: `Outcome of ${action.tool} (action ${action.id}): ${impactDescription}. Before: ${before.orderCount} orders / ${before.totalRevenue}. After: ${after.orderCount} orders / ${after.totalRevenue}. (Shop-level proxy, not per-product attribution.)`,
+      content: `Outcome of ${action.tool} (action ${action.id}): ${outcomeClass} — ${impactDescription}. Before: ${before.orderCount} orders / ${before.totalRevenue}. After: ${after.orderCount} orders / ${after.totalRevenue}. (Shop-level proxy, not per-product attribution.)`,
       source: "outcome_measurement",
       confidence: 0.5,
       importance: 0.6,
-      metadata: { before, after, revenueChangePct },
+      metadata: { before, after, revenueChangePct, outcome: outcomeClass },
     });
   } catch (error) {
     console.error(`Failed to save outcome memory for action ${actionId}:`, error);

@@ -4,7 +4,7 @@ import { authenticate } from "../shopify.server";
 import { ensureShop } from "../lib/shopify-data/shop.server";
 import { prepareAction } from "../lib/agent/actions.server";
 
-const VALID_TOOLS: ActionTool[] = ["UPDATE_PRICE", "UPDATE_INVENTORY"];
+const VALID_TOOLS: ActionTool[] = ["UPDATE_PRICE", "UPDATE_INVENTORY", "UPDATE_DISCOUNT_STATUS", "ADD_ORDER_TAGS"];
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -20,14 +20,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shopRecord = await ensureShop(session.shop);
 
   try {
-    const created = await prepareAction({
+    const { action: created, filterWarning } = await prepareAction({
       shopId: shopRecord.id,
       tool: body.tool,
       arguments: body.arguments,
       reasoning: typeof body.reasoning === "string" ? body.reasoning : undefined,
       actor: "merchant",
     });
-    return Response.json({ action: created });
+    return Response.json({ action: created, filterWarning });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 400 });

@@ -90,6 +90,11 @@ model Product {
   updatedAt     DateTime  @updatedAt
   syncedAt      DateTime  @default(now())
 
+  // Current metric snapshot (spec §3.2 tier 1): a cached point-in-time value,
+  // distinct from the analytical tier which recomputes on demand over a window.
+  salesVelocity    Decimal?  @db.Decimal(12, 4) // units sold per day, trailing window
+  metricsUpdatedAt DateTime?
+
   shop     Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   variants ProductVariant[]
 
@@ -139,9 +144,11 @@ model Order {
   updatedAt       DateTime  @updatedAt
   syncedAt        DateTime  @default(now())
 
-  shop      Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer  Customer?       @relation(fields: [customerId], references: [id])
-  lineItems OrderLineItem[]
+  shop         Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer     Customer?           @relation(fields: [customerId], references: [id])
+  lineItems    OrderLineItem[]
+  fulfillments Fulfillment[]
+  transactions OrderTransaction[]
 
   @@unique([shopId, shopifyId])
   @@index([shopId])
@@ -161,6 +168,50 @@ model OrderLineItem {
   raw         Json
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+  @@index([orderId])
+}
+
+model Fulfillment {
+  id             String    @id @default(cuid())
+  shopId         String
+  shopifyId      String
+  orderId        String
+  status         String?
+  trackingNumber String?
+  trackingUrl    String?
+  shippedAt      DateTime?
+  raw            Json
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  syncedAt       DateTime  @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+  @@index([orderId])
+}
+
+model OrderTransaction {
+  id        String    @id @default(cuid())
+  shopId    String
+  shopifyId String
+  orderId   String
+  kind      String?
+  status    String?
+  gateway   String?
+  amount    Decimal?  @db.Decimal(12, 2)
+  currency  String?
+  processedAt DateTime?
+  raw       Json
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  syncedAt  DateTime  @default(now())
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
@@ -247,6 +298,8 @@ enum EventType {
   DISCOUNT_CREATED
   DISCOUNT_UPDATED
   COLLECTION_UPDATED
+  FULFILLMENT_CREATED
+  FULFILLMENT_UPDATED
   AI_ACTION_PREPARED
   AI_ACTION_APPROVED
   AI_ACTION_EXECUTED
@@ -349,6 +402,8 @@ model ConversationSession {
 enum ActionTool {
   UPDATE_PRICE
   UPDATE_INVENTORY
+  UPDATE_DISCOUNT_STATUS
+  ADD_ORDER_TAGS
 }
 
 enum ActionStatus {
@@ -373,11 +428,30 @@ model Action {
   reasoning   String?
   sourceRefs  Json?
   result      Json?
+  confidence  Float?
+  outcome     String? // "positive" | "negative" | "neutral", set by measureActionOutcome (spec §10.1)
   createdAt   DateTime     @default(now())
   approvedAt  DateTime?
   executedAt  DateTime?
 
   @@index([shopId, status])
+  @@index([shopId, tool, outcome])
+}
+
+// Spec §10.1 "Strategy Reweighting": a lightweight per-shop/per-tool success-rate
+// aggregate, updated whenever an OutcomeMemory is written. This IS the learning
+// artifact — REASON/RECOMMEND query it before proposing a similar action again.
+model ActionOutcomeStat {
+  id          String     @id @default(cuid())
+  shopId      String
+  tool        ActionTool
+  attempts    Int        @default(0)
+  positive    Int        @default(0)
+  negative    Int        @default(0)
+  lastUpdated DateTime   @updatedAt
+
+  @@unique([shopId, tool])
+  @@index([shopId])
 }
 
 // Raw bytes for an uploaded knowledge-base document, keyed by the same

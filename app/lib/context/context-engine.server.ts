@@ -104,9 +104,19 @@ export async function buildContext({ shopId, query }: BuildContextInput): Promis
   const budgetedFacts = budgeted
     .filter((item) => item.sourceType === "structured_fact")
     .map((item) => item.payload as StructuredFact);
-  const budgetedMemories = budgeted
+  const allMemories = budgeted
     .filter((item) => item.sourceType === "memory")
-    .map((item) => item.payload as Record<string, unknown>);
+    .map((item) => item.payload as Record<string, unknown> & { memoryType?: string });
+
+  // Spec §13's example package separates decisions/outcomes/insights from
+  // general semantic memory — they all come from the same searchMemory call,
+  // just partitioned by memoryType rather than fetched separately.
+  const budgetedMemories = allMemories.filter(
+    (m) => m.memoryType !== "INSIGHT" && m.memoryType !== "DECISION" && m.memoryType !== "OUTCOME",
+  );
+  const budgetedInsights = allMemories.filter((m) => m.memoryType === "INSIGHT");
+  const budgetedDecisions = allMemories.filter((m) => m.memoryType === "DECISION");
+  const budgetedOutcomes = allMemories.filter((m) => m.memoryType === "OUTCOME");
   const budgetedEvents = budgeted
     .filter((item) => item.sourceType === "event")
     .map((item) => item.payload as Record<string, unknown>);
@@ -124,9 +134,9 @@ export async function buildContext({ shopId, query }: BuildContextInput): Promis
     metrics: { sales: metrics },
     events: budgetedEvents,
     memories: budgetedMemories,
-    insights: [],
-    decisions: [],
-    outcomes: [],
+    insights: budgetedInsights,
+    decisions: budgetedDecisions,
+    outcomes: budgetedOutcomes,
     sources,
   };
 }

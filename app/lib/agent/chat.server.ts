@@ -4,11 +4,13 @@ import { buildContext } from "../context/context-engine.server";
 import { generateResponse } from "./respond.server";
 import { computeConfidence } from "./confidence.server";
 import { extractActionRequest } from "./action-extraction.server";
+import { extractMerchantPreference } from "./preference-extraction.server";
 import { prepareAction } from "./actions.server";
 import { selectAgent, checkCrossAgentConflicts, type AgentRole } from "./orchestrator.server";
 import type { ContextSource } from "../context/types";
 import { getShopAiSettings } from "../ai/settings.server";
 import { runWithShopAiSettings } from "../ai/settings-context.server";
+import { saveMemory } from "../memory/memory.server";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -85,7 +87,7 @@ async function handleChatMessageInner(input: HandleChatMessageInput): Promise<Ha
   if (context.intent === "ACTION_REQUEST") {
     const extracted = await extractActionRequest(input.message, context.facts);
     if (extracted) {
-      const action = await prepareAction({
+      const { action, filterWarning } = await prepareAction({
         shopId: input.shopId,
         tool: extracted.tool,
         arguments: extracted.arguments,
@@ -95,8 +97,28 @@ async function handleChatMessageInner(input: HandleChatMessageInput): Promise<Ha
       });
       preparedActionId = action.id;
       reply += `\n\nI've prepared this action for your review (action ${action.id}). It will only run once you approve it.`;
+      if (filterWarning) reply += `\n\n⚠️ ${filterWarning}`;
     }
   }
+
+  // Best-effort, non-blocking: a merchant preference is a nice-to-have signal,
+  // never worth delaying or failing the chat reply over.
+  extractMerchantPreference(input.message)
+    .then((preference) => {
+      if (!preference) return;
+      return saveMemory({
+        shopId: input.shopId,
+        memoryType: "MERCHANT_PREFERENCE",
+        entityType: "shop",
+        entityId: input.shopId,
+        content: preference.content,
+        source: "merchant_conversation",
+        confidence: preference.confidence,
+        importance: 0.9,
+        metadata: { subject: preference.subject },
+      });
+    })
+    .catch((error) => console.error("Failed to save merchant preference memory:", error));
 
   const existingMessages = Array.isArray(session.messages) ? (session.messages as unknown as ChatMessage[]) : [];
   const now = new Date().toISOString();

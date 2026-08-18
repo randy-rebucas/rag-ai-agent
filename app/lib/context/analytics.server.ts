@@ -31,3 +31,34 @@ export async function getSalesMetrics(shopId: string, timeRange: TimeRange | nul
 
   return { orderCount, totalRevenue, averageOrderValue, timeRange };
 }
+
+const SALES_VELOCITY_WINDOW_DAYS = 30;
+
+/**
+ * Recomputes and persists the Product.salesVelocity snapshot (spec §3.2 tier 1:
+ * a cached current-state field, distinct from on-demand analytical retrieval).
+ * Caller-driven (e.g. after order ingestion or on insight generation) rather
+ * than wired into every webhook, to avoid a DB write on every line item.
+ */
+export async function refreshProductSalesVelocity(shopId: string, productId: string): Promise<number> {
+  const since = new Date(Date.now() - SALES_VELOCITY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+  const aggregate = await db.orderLineItem.aggregate({
+    where: {
+      shopId,
+      productId,
+      order: { cancelledAt: null, processedAt: { gte: since } },
+    },
+    _sum: { quantity: true },
+  });
+
+  const unitsSold = aggregate._sum.quantity ?? 0;
+  const velocity = unitsSold / SALES_VELOCITY_WINDOW_DAYS;
+
+  await db.product.update({
+    where: { id: productId },
+    data: { salesVelocity: velocity, metricsUpdatedAt: new Date() },
+  });
+
+  return velocity;
+}

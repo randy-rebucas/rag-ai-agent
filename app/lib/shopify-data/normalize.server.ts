@@ -2,6 +2,7 @@
 import db from "../../db.server";
 import { gidToLegacyId, legacyIdToGid } from "./types";
 import { recordEvent } from "./events.server";
+import { refreshProductSalesVelocity } from "../context/analytics.server";
 import { upsertProductMemory } from "../memory/product-memory.server";
 
 export const LOW_STOCK_THRESHOLD = 5;
@@ -300,6 +301,7 @@ export async function upsertLineItem(
   orderId: string,
   data: {
     shopifyId: string;
+    productId?: string | null;
     title?: string | null;
     quantity?: number | null;
     price?: number | null;
@@ -309,6 +311,7 @@ export async function upsertLineItem(
   return db.orderLineItem.upsert({
     where: { shopId_shopifyId: { shopId, shopifyId: data.shopifyId } },
     update: {
+      productId: data.productId ?? undefined,
       title: data.title ?? undefined,
       quantity: data.quantity ?? undefined,
       price: data.price ?? undefined,
@@ -318,6 +321,7 @@ export async function upsertLineItem(
       shopId,
       orderId,
       shopifyId: data.shopifyId,
+      productId: data.productId ?? null,
       title: data.title ?? null,
       quantity: data.quantity ?? null,
       price: data.price ?? null,
@@ -371,13 +375,29 @@ export async function upsertOrderFromWebhook(shopId: string, payload: any) {
     const lineGid = String(
       item.admin_graphql_api_id ?? legacyIdToGid("LineItem", item.id),
     );
+    let productId: string | null = null;
+    const productGid = legacyIdToGid("Product", item.product_id);
+    if (productGid) {
+      const product = await db.product.findUnique({
+        where: { shopId_shopifyId: { shopId, shopifyId: productGid } },
+      });
+      productId = product?.id ?? null;
+    }
     await upsertLineItem(shopId, order.id, {
       shopifyId: lineGid,
+      productId,
       title: item.title,
       quantity: item.quantity ?? null,
       price: toDecimal(item.price),
       raw: item,
     });
+
+    if (productId) {
+      // Best-effort snapshot refresh — never block order ingestion on it.
+      refreshProductSalesVelocity(shopId, productId).catch((err) =>
+        console.error(`Failed to refresh salesVelocity for product ${productId}:`, err),
+      );
+    }
   }
 
   return order;
@@ -413,13 +433,138 @@ export async function upsertLineItemFromGraphQLNode(
   });
   if (!order) return null;
 
+  let productId: string | null = null;
+  if (node.product?.id) {
+    const product = await db.product.findUnique({
+      where: { shopId_shopifyId: { shopId, shopifyId: node.product.id } },
+    });
+    productId = product?.id ?? null;
+  }
+
   return upsertLineItem(shopId, order.id, {
     shopifyId: node.id,
+    productId,
     title: node.title,
     quantity: node.quantity ?? null,
     price: toDecimal(node.originalUnitPriceSet?.shopMoney?.amount),
     raw: node,
   });
+}
+
+// ---------- Order transactions ----------
+// No dedicated Shopify webhook topic exists for transactions; populated via
+// the GraphQL bulk order sync's nested `transactions` list (see sync.server.ts).
+
+export async function upsertOrderTransactionFromGraphQLNode(shopId: string, orderId: string, node: any) {
+  return db.orderTransaction.upsert({
+    where: { shopId_shopifyId: { shopId, shopifyId: node.id } },
+    update: {
+      kind: node.kind ?? undefined,
+      status: node.status ?? undefined,
+      gateway: node.gateway ?? undefined,
+      amount: toDecimal(node.amountSet?.shopMoney?.amount) ?? undefined,
+      currency: node.amountSet?.shopMoney?.currencyCode ?? undefined,
+      processedAt: toDate(node.processedAt) ?? undefined,
+      raw: node,
+      syncedAt: new Date(),
+    },
+    create: {
+      shopId,
+      orderId,
+      shopifyId: node.id,
+      kind: node.kind ?? null,
+      status: node.status ?? null,
+      gateway: node.gateway ?? null,
+      amount: toDecimal(node.amountSet?.shopMoney?.amount),
+      currency: node.amountSet?.shopMoney?.currencyCode ?? null,
+      processedAt: toDate(node.processedAt),
+      raw: node,
+    },
+  });
+}
+
+// ---------- Fulfillments ----------
+
+export async function upsertFulfillment(
+  shopId: string,
+  orderId: string,
+  data: {
+    shopifyId: string;
+    status?: string | null;
+    trackingNumber?: string | null;
+    trackingUrl?: string | null;
+    shippedAt?: Date | null;
+    raw: unknown;
+  },
+) {
+  const previous = await db.fulfillment.findUnique({
+    where: { shopId_shopifyId: { shopId, shopifyId: data.shopifyId } },
+  });
+
+  const record = await db.fulfillment.upsert({
+    where: { shopId_shopifyId: { shopId, shopifyId: data.shopifyId } },
+    update: {
+      status: data.status ?? undefined,
+      trackingNumber: data.trackingNumber ?? undefined,
+      trackingUrl: data.trackingUrl ?? undefined,
+      shippedAt: data.shippedAt ?? undefined,
+      raw: data.raw as object,
+      syncedAt: new Date(),
+    },
+    create: {
+      shopId,
+      orderId,
+      shopifyId: data.shopifyId,
+      status: data.status ?? null,
+      trackingNumber: data.trackingNumber ?? null,
+      trackingUrl: data.trackingUrl ?? null,
+      shippedAt: data.shippedAt ?? null,
+      raw: data.raw as object,
+    },
+  });
+
+  return { record, previous };
+}
+
+export async function upsertFulfillmentFromWebhook(shopId: string, payload: any) {
+  const shopifyId = String(payload.admin_graphql_api_id ?? legacyIdToGid("Fulfillment", payload.id));
+  const orderShopifyId = String(
+    payload.order_id ? legacyIdToGid("Order", payload.order_id) : payload.admin_graphql_api_order_id,
+  );
+  const occurredAt = toDate(payload.updated_at) ?? new Date();
+
+  const order = await db.order.findUnique({
+    where: { shopId_shopifyId: { shopId, shopifyId: orderShopifyId } },
+  });
+  if (!order) return null;
+
+  const trackingNumber = Array.isArray(payload.tracking_numbers)
+    ? (payload.tracking_numbers[0] ?? null)
+    : (payload.tracking_number ?? null);
+  const trackingUrl = Array.isArray(payload.tracking_urls)
+    ? (payload.tracking_urls[0] ?? null)
+    : (payload.tracking_url ?? null);
+
+  const { record: fulfillment, previous } = await upsertFulfillment(shopId, order.id, {
+    shopifyId,
+    status: payload.status ?? payload.shipment_status ?? null,
+    trackingNumber,
+    trackingUrl,
+    shippedAt: toDate(payload.created_at),
+    raw: payload,
+  });
+
+  await recordEvent({
+    shopId,
+    eventType: !previous ? "FULFILLMENT_CREATED" : "FULFILLMENT_UPDATED",
+    entityType: "fulfillment",
+    entityId: fulfillment.id,
+    shopifyId,
+    payload: { orderId: order.id, status: fulfillment.status, trackingNumber: fulfillment.trackingNumber },
+    occurredAt,
+  });
+
+  return fulfillment;
 }
 
 // ---------- Customers ----------

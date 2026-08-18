@@ -9,12 +9,18 @@ const EVIDENCE_SATURATION_COUNT = 6;
  * what evidence it was actually given.
  */
 export function computeConfidence(context: ContextPackage): number {
-  const evidenceCount = context.facts.length + context.memories.length + context.events.length;
+  const evidenceCount =
+    context.facts.length +
+    context.memories.length +
+    context.events.length +
+    context.insights.length +
+    context.decisions.length +
+    context.outcomes.length;
   if (evidenceCount === 0) return 0.1;
 
   const evidenceScore = Math.min(evidenceCount / EVIDENCE_SATURATION_COUNT, 1);
 
-  const similarities = context.memories
+  const similarities = [...context.memories, ...context.insights, ...context.decisions, ...context.outcomes]
     .map((m) => (typeof m.similarity === "number" ? m.similarity : null))
     .filter((s): s is number => s !== null);
   const avgSimilarity = similarities.length

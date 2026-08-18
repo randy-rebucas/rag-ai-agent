@@ -3,18 +3,24 @@ import type { StructuredFact } from "../context/types";
 
 export type ExtractedAction =
   | { tool: "UPDATE_PRICE"; arguments: { productId: string; variantId: string; newPrice: string } }
-  | { tool: "UPDATE_INVENTORY"; arguments: { inventoryItemId: string; locationId: string; quantity: number } };
+  | { tool: "UPDATE_INVENTORY"; arguments: { inventoryItemId: string; locationId: string; quantity: number } }
+  | { tool: "UPDATE_DISCOUNT_STATUS"; arguments: { discountId: string; active: boolean } }
+  | { tool: "ADD_ORDER_TAGS"; arguments: { orderId: string; tags: string[] } };
 
-const SYSTEM_PROMPT = `You extract a concrete Shopify write action from a merchant's chat message, using only the candidate products/variants provided.
+const SYSTEM_PROMPT = `You extract a concrete Shopify write action from a merchant's chat message, using only the candidate products/variants/discounts/orders provided.
 
 Respond with ONLY a single JSON object, no prose, no markdown fences:
 - If the message clearly requests a price change for one of the candidates and gives a specific new price:
   { "tool": "UPDATE_PRICE", "productId": "...", "variantId": "...", "newPrice": "129.99" }
 - If the message clearly requests an inventory quantity change:
   { "tool": "UPDATE_INVENTORY", "inventoryItemId": "...", "locationId": "...", "quantity": 42 }
+- If the message clearly requests activating or deactivating a specific discount code:
+  { "tool": "UPDATE_DISCOUNT_STATUS", "discountId": "...", "active": true }
+- If the message clearly requests adding tags to a specific order:
+  { "tool": "ADD_ORDER_TAGS", "orderId": "...", "tags": ["..."] }
 - If the request is vague, missing a specific target, or missing a specific number: { "tool": null }
 
-Never guess a price or quantity that isn't explicitly stated in the message. Never invent ids not present in the candidates.`;
+Never guess a price, quantity, or tag that isn't explicitly stated in the message. Never invent ids not present in the candidates.`;
 
 /** Turns an ACTION_REQUEST-classified message into a concrete tool call, or null if it can't confidently resolve one. Never guesses destructive parameters. */
 export async function extractActionRequest(
@@ -63,6 +69,25 @@ export async function extractActionRequest(
           locationId: String(parsed.locationId),
           quantity: parsed.quantity,
         },
+      };
+    }
+
+    if (parsed.tool === "UPDATE_DISCOUNT_STATUS" && parsed.discountId && typeof parsed.active === "boolean") {
+      return {
+        tool: "UPDATE_DISCOUNT_STATUS",
+        arguments: { discountId: String(parsed.discountId), active: parsed.active },
+      };
+    }
+
+    if (
+      parsed.tool === "ADD_ORDER_TAGS" &&
+      parsed.orderId &&
+      Array.isArray(parsed.tags) &&
+      parsed.tags.length > 0
+    ) {
+      return {
+        tool: "ADD_ORDER_TAGS",
+        arguments: { orderId: String(parsed.orderId), tags: parsed.tags.map(String) },
       };
     }
 

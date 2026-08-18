@@ -51,6 +51,24 @@ function formatContextForPrompt(context: ContextPackage): string {
     );
   }
 
+  if (context.insights.length) {
+    sections.push(
+      "Prior AI insights:\n" + context.insights.map((m) => `- ${m.content}`).join("\n"),
+    );
+  }
+
+  if (context.decisions.length) {
+    sections.push(
+      "Prior AI recommendations/decisions:\n" + context.decisions.map((m) => `- ${m.content}`).join("\n"),
+    );
+  }
+
+  if (context.outcomes.length) {
+    sections.push(
+      "Outcomes of prior AI actions:\n" + context.outcomes.map((m) => `- ${m.content}`).join("\n"),
+    );
+  }
+
   return sections.length ? sections.join("\n\n") : "(no matching store data found)";
 }
 

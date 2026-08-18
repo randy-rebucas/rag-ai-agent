@@ -7,6 +7,7 @@ import {
   upsertVariantFromGraphQLNode,
   upsertOrderFromGraphQLNode,
   upsertLineItemFromGraphQLNode,
+  upsertOrderTransactionFromGraphQLNode,
   upsertCustomerFromGraphQLNode,
   upsertCollectionFromGraphQLNode,
   upsertDiscountFromGraphQLNode,
@@ -98,8 +99,17 @@ async function syncOrders(shopId: string, admin: AdminGraphqlClient) {
                   title
                   quantity
                   originalUnitPriceSet { shopMoney { amount } }
+                  product { id }
                 }
               }
+            }
+            transactions {
+              id
+              kind
+              status
+              gateway
+              processedAt
+              amountSet { shopMoney { amount, currencyCode } }
             }
           }
         }
@@ -110,8 +120,12 @@ async function syncOrders(shopId: string, admin: AdminGraphqlClient) {
   const { roots, childrenByParent } = partitionByParent(nodes);
   for (const order of roots) {
     await upsertOrderFromGraphQLNode(shopId, order);
-    for (const lineItem of childrenByParent.get(order.id) ?? []) {
-      await upsertLineItemFromGraphQLNode(shopId, order.id, lineItem);
+    for (const child of childrenByParent.get(order.id) ?? []) {
+      if (String(child.id).includes("/OrderTransaction/")) {
+        await upsertOrderTransactionFromGraphQLNode(shopId, order.id, child);
+      } else {
+        await upsertLineItemFromGraphQLNode(shopId, order.id, child);
+      }
     }
   }
 }

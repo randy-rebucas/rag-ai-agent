@@ -64,6 +64,15 @@ api_version = "2026-10"
   uri = "/webhooks/discounts/upsert"
   topics = [ "discounts/create", "discounts/update" ]
 
+  # fulfillments/create and fulfillments/update carry shipping/tracking data,
+  # which Shopify classifies as protected customer data — subscribing requires
+  # approval (https://shopify.dev/docs/apps/launch/protected-customer-data).
+  # Route + normalize code already exist (webhooks.fulfillments.upsert.tsx);
+  # uncomment this once the app is approved for that data tier.
+  # [[webhooks.subscriptions]]
+  # uri = "/webhooks/fulfillments/upsert"
+  # topics = [ "fulfillments/create", "fulfillments/update" ]
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
 
