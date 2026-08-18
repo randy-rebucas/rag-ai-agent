@@ -1,0 +1,398 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+enum SyncFreshness {
+  REALTIME
+  RECENT
+  STALE
+  UNKNOWN
+}
+
+// Root tenant record. Every other domain model is scoped by shopId.
+model Shop {
+  id              String        @id @default(cuid())
+  shopDomain      String        @unique
+  installedAt     DateTime      @default(now())
+  uninstalledAt   DateTime?
+  initialSyncDone Boolean       @default(false)
+  lastSyncedAt    DateTime?
+  syncFreshness   SyncFreshness @default(UNKNOWN)
+
+  products      Product[]
+  orders        Order[]
+  customers     Customer[]
+  inventoryItems InventoryItem[]
+  collections   Collection[]
+  discounts     Discount[]
+  settings      ShopSettings?
+}
+
+// Merchant-level AI configuration. Any field left null falls back to the
+// app-wide env var default (see app/lib/ai/settings.server.ts) — a merchant
+// only needs to fill in what they want to override, e.g. bring their own key.
+model ShopSettings {
+  id               String   @id @default(cuid())
+  shopId           String   @unique
+  anthropicApiKey  String?
+  openaiApiKey     String?
+  chatModel        String?
+  classifierModel  String?
+  embeddingModel   String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+}
+
+model Product {
+  id            String    @id @default(cuid())
+  shopId        String
+  shopifyId     String
+  title         String
+  handle        String?
+  status        String?
+  productType   String?
+  vendor        String?
+  publishedAt   DateTime?
+  raw           Json
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  syncedAt      DateTime  @default(now())
+
+  shop     Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  variants ProductVariant[]
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+}
+
+model ProductVariant {
+  id             String   @id @default(cuid())
+  shopId         String
+  shopifyId      String
+  productId      String
+  title          String?
+  sku            String?
+  price          Decimal? @db.Decimal(12, 2)
+  compareAtPrice Decimal? @db.Decimal(12, 2)
+  inventoryQty   Int?
+  raw            Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  syncedAt       DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+  @@index([productId])
+}
+
+model Order {
+  id              String    @id @default(cuid())
+  shopId          String
+  shopifyId       String
+  name            String?
+  email           String?
+  financialStatus String?
+  fulfillmentStatus String?
+  currency        String?
+  totalPrice      Decimal?  @db.Decimal(12, 2)
+  subtotalPrice   Decimal?  @db.Decimal(12, 2)
+  totalDiscounts  Decimal?  @db.Decimal(12, 2)
+  cancelledAt     DateTime?
+  customerId      String?
+  raw             Json
+  processedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  syncedAt        DateTime  @default(now())
+
+  shop      Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer  Customer?       @relation(fields: [customerId], references: [id])
+  lineItems OrderLineItem[]
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+  @@index([customerId])
+}
+
+model OrderLineItem {
+  id          String   @id @default(cuid())
+  shopId      String
+  shopifyId   String
+  orderId     String
+  productId   String?
+  variantId   String?
+  title       String?
+  quantity    Int?
+  price       Decimal? @db.Decimal(12, 2)
+  raw         Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+  @@index([orderId])
+}
+
+model Customer {
+  id             String    @id @default(cuid())
+  shopId         String
+  shopifyId      String
+  email          String?
+  firstName      String?
+  lastName       String?
+  ordersCount    Int?
+  totalSpent     Decimal?  @db.Decimal(12, 2)
+  raw            Json
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  syncedAt       DateTime  @default(now())
+
+  shop   Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+}
+
+model InventoryItem {
+  id           String   @id @default(cuid())
+  shopId       String
+  shopifyId    String
+  sku          String?
+  locationId   String  @default("")
+  available    Int?
+  raw          Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  syncedAt     DateTime @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId, locationId])
+  @@index([shopId])
+}
+
+model Collection {
+  id          String   @id @default(cuid())
+  shopId      String
+  shopifyId   String
+  title       String
+  handle      String?
+  raw         Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  syncedAt    DateTime @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+}
+
+enum EventSource {
+  shopify
+  ai
+  system
+}
+
+enum EventType {
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  PRODUCT_DELETED
+  PRICE_CHANGED
+  INVENTORY_UPDATED
+  INVENTORY_LOW
+  INVENTORY_RESTOCKED
+  ORDER_CREATED
+  ORDER_UPDATED
+  ORDER_CANCELLED
+  CUSTOMER_CREATED
+  CUSTOMER_UPDATED
+  DISCOUNT_CREATED
+  DISCOUNT_UPDATED
+  COLLECTION_UPDATED
+  AI_ACTION_PREPARED
+  AI_ACTION_APPROVED
+  AI_ACTION_EXECUTED
+  AI_OUTCOME_MEASURED
+}
+
+// Immutable, append-only activity log. Never updated or deleted — only created.
+model Event {
+  id          String      @id @default(cuid())
+  shopId      String
+  eventType   EventType
+  entityType  String
+  entityId    String?
+  shopifyId   String?
+  source      EventSource @default(shopify)
+  actor       String?
+  payload     Json
+  occurredAt  DateTime
+  processedAt DateTime    @default(now())
+  schemaVersion Int       @default(1)
+
+  @@unique([shopId, source, eventType, shopifyId, occurredAt])
+  @@index([shopId, entityType, entityId])
+  @@index([shopId, occurredAt])
+}
+
+model Discount {
+  id          String    @id @default(cuid())
+  shopId      String
+  shopifyId   String
+  title       String?
+  status      String?
+  startsAt    DateTime?
+  endsAt      DateTime?
+  raw         Json
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  syncedAt    DateTime  @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, shopifyId])
+  @@index([shopId])
+}
+
+enum MemoryType {
+  STORE
+  PRODUCT
+  CUSTOMER
+  ORDER
+  INVENTORY
+  MARKETING
+  CONVERSATION
+  MERCHANT_PREFERENCE
+  ACTIVITY
+  INSIGHT
+  DECISION
+  OUTCOME
+  DOCUMENT
+}
+
+// Semantic memory: meaningful units (not raw rows) embedded for similarity search.
+// The `embedding` column is managed via raw SQL (Prisma has no native vector type);
+// see app/lib/memory/memory.server.ts.
+model Memory {
+  id         String     @id @default(cuid())
+  shopId     String
+  entityType String?
+  entityId   String?
+  memoryType MemoryType
+  content    String
+  metadata   Json?
+  source     String?
+  confidence Float?
+  importance Float?
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  expiresAt  DateTime?
+
+  @@index([shopId, memoryType])
+  @@index([shopId, entityType, entityId])
+}
+
+// Spec §31: one row per session, flat message array — nothing yet needs to
+// query individual messages independently of their session.
+model ConversationSession {
+  id        String   @id @default(cuid())
+  shopId    String
+  userId    String?
+  messages  Json
+  intent    String?
+  summary   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopId])
+}
+
+enum ActionTool {
+  UPDATE_PRICE
+  UPDATE_INVENTORY
+}
+
+enum ActionStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  EXECUTED
+  FAILED
+}
+
+// This row is the audit log (spec §23): who/what/why/when/result in one place.
+// executeAction claims a row via an atomically-guarded status transition
+// (APPROVED -> EXECUTED), which is the idempotency mechanism — a row can
+// only be claimed for execution once, so no separate idempotency key.
+model Action {
+  id          String       @id @default(cuid())
+  shopId      String
+  tool        ActionTool
+  arguments   Json
+  status      ActionStatus @default(PENDING_APPROVAL)
+  actor       String
+  reasoning   String?
+  sourceRefs  Json?
+  result      Json?
+  createdAt   DateTime     @default(now())
+  approvedAt  DateTime?
+  executedAt  DateTime?
+
+  @@index([shopId, status])
+}
+
+// Raw bytes for an uploaded knowledge-base document, keyed by the same
+// entityId used on its DOCUMENT Memory chunks — lets a merchant re-download
+// what they uploaded. The extracted/embedded text lives in Memory, not here.
+model Document {
+  id        String   @id @default(cuid())
+  shopId    String
+  entityId  String
+  filename  String
+  mimeType  String
+  size      Int
+  content   Bytes
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shopId, entityId])
+}
