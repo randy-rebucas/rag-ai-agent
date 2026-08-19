@@ -1,10 +1,19 @@
-# Shopify App Template - React Router
+# Shopify RAG AI Agent
 
-This is a template for building a [Shopify app](https://shopify.dev/docs/apps/getting-started) using [React Router](https://reactrouter.com/). It was forked from the [Shopify Remix app template](https://github.com/Shopify/shopify-app-template-remix) and converted to React Router.
+A Shopify admin app that answers merchant questions and proposes store actions using retrieval-augmented generation over the store's own data — structured records, event history, and semantic memory — rather than a plain `User → LLM → Vector Search → Answer` chatbot. Built on the [Shopify app template for React Router](https://github.com/Shopify/shopify-app-template-react-router).
 
-Rather than cloning this repo, follow the [Quick Start steps](https://github.com/Shopify/shopify-app-template-react-router#quick-start).
+## Architecture
 
-Visit the [`shopify.dev` documentation](https://shopify.dev/docs/api/shopify-app-react-router) for more details on the React Router app package.
+The agent loop: **Observe → Understand → Retrieve → Reason → Recommend → Request Approval → Execute → Measure → Learn → Update Memory.**
+
+- **Ingestion** — Shopify webhooks (`app/routes/webhooks.*.tsx`) plus a bulk GraphQL sync (`app/lib/shopify-data/sync.server.ts`) normalize store data (`normalize.server.ts`) into Postgres and an append-only `Event` log.
+- **Context Engine** (`app/lib/context/context-engine.server.ts`) — classifies query intent, then runs structured, semantic (pgvector), temporal, and analytical retrieval in parallel, ranks and budgets the results into one `ContextPackage`.
+- **Memory** (`app/lib/memory/`) — a typed `Memory` model (product, customer, merchant preference, conversation, insight, decision, outcome, document, ...) embedded via `app/lib/ai/embeddings.server.ts`, always scoped by `shopId`. Old low-importance memories are archived via `app/lib/memory/consolidation.server.ts`.
+- **Agent** (`app/lib/agent/`) — routes each query to a specialist role (`orchestrator.server.ts`), generates a response (`respond.server.ts`), and — for write requests — extracts a concrete tool call (`action-extraction.server.ts`).
+- **Actions** (`app/lib/agent/actions.server.ts`, `tools/`) — every write (price, inventory, discount status, order tags) goes through prepare → merchant approval → execute, never auto-executed. Execution is idempotent via an atomic status-claim.
+- **Learning** (`app/lib/intelligence/learning.server.ts`, `outcome.server.ts`) — after an action executes, its outcome is measured and classified, which calibrates future confidence, flags repeats of past negative outcomes, and updates a per-shop/per-tool success-rate table.
+
+See `AGENTS.md` for Shopify-platform-specific conventions used across this codebase.
 
 ## Upgrading from Remix
 
@@ -15,6 +24,8 @@ If you have an existing Remix app that you want to upgrade to React Router, plea
 ### Prerequisites
 
 Before you begin, you'll need to [download and install the Shopify CLI](https://shopify.dev/docs/apps/tools/cli/getting-started) if you haven't already.
+
+You'll also need a Postgres database with the `pgvector` extension, and API keys for Anthropic (chat/classification) and OpenAI (embeddings) — see `.env.example` for the full list and a Docker one-liner for local Postgres.
 
 ### Setup
 
@@ -215,6 +226,14 @@ PRISMA_CLIENT_ENGINE_TYPE=binary
 ```
 
 This forces Prisma to use the binary engine mode, which runs the query engine as a separate process and can work via emulation on Windows ARM64.
+
+### `prisma generate` fails with `EPERM: operation not permitted, rename ... query_engine-windows.dll.node`
+
+On Windows, a running dev server (`shopify app dev` / `react-router dev`) holds the query engine DLL open, so `prisma generate` can't replace it after a schema change. Stop the dev server first, run `npx prisma generate`, then restart.
+
+### Webhook topic rejected: "not approved to subscribe to webhook topics containing protected customer data"
+
+Topics like `customers/*`, `orders/*`, and `fulfillments/*` carry PII and require Shopify approval (see [protected customer data](https://shopify.dev/docs/apps/launch/protected-customer-data)) before you can subscribe in `shopify.app.toml`, even in development. Until approved, keep those subscriptions commented out — the ingestion code can still run via the periodic bulk sync (`app/lib/shopify-data/sync.server.ts`) instead of live webhooks.
 
 ## Resources
 
