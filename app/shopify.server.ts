@@ -9,6 +9,12 @@ import prisma from "./db.server";
 import { ensureShop } from "./lib/shopify-data/shop.server";
 import { runInitialSync } from "./lib/shopify-data/sync.server";
 
+// Spec §37 RBAC: every app/api.* route calls authenticate.admin(request), which
+// requires a valid Shopify staff session with app access. That IS this app's
+// authorization boundary — Shopify's own staff-permission model, not a role
+// system layered on top. There's no independent notion of "app users" with
+// different privilege levels here, so a separate roles/permissions table would
+// just duplicate what Shopify already enforces at the session layer.
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "",

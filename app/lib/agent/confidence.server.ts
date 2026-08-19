@@ -29,6 +29,22 @@ export function computeConfidence(context: ContextPackage): number {
 
   const hasStructuredFacts = context.facts.length > 0 ? 1 : 0.6;
 
-  const score = evidenceScore * 0.5 + avgSimilarity * 0.3 + hasStructuredFacts * 0.2;
+  // Temporal consistency (spec §33): is the evidence backing this answer
+  // actually current? Reuses the freshness signal rather than a second
+  // independent computation — a stale sync is exactly what "temporally
+  // inconsistent with reality" means for this app's data.
+  const temporalConsistency =
+    context.dataFreshness === "REALTIME" ? 1 : context.dataFreshness === "RECENT" ? 0.8 : context.dataFreshness === "STALE" ? 0.4 : 0.5;
+
+  // Contradictory evidence (spec §33): prior outcomes for the same tool
+  // disagreeing with each other is a direct, literal contradiction signal —
+  // unlike most heuristics here this isn't a proxy, it's the real thing.
+  const positiveOutcomes = context.outcomes.filter((o) => o.metadata && (o.metadata as { outcome?: string }).outcome === "positive").length;
+  const negativeOutcomes = context.outcomes.filter((o) => o.metadata && (o.metadata as { outcome?: string }).outcome === "negative").length;
+  const hasContradictoryOutcomes = positiveOutcomes > 0 && negativeOutcomes > 0;
+  const contradictionPenalty = hasContradictoryOutcomes ? 0.7 : 1;
+
+  const score =
+    (evidenceScore * 0.4 + avgSimilarity * 0.25 + hasStructuredFacts * 0.15 + temporalConsistency * 0.2) * contradictionPenalty;
   return Math.round(Math.min(Math.max(score, 0), 1) * 100) / 100;
 }

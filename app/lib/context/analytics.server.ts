@@ -8,6 +8,17 @@ export type SalesMetrics = {
   timeRange: TimeRange | null;
 };
 
+// Spec §40 cost control: cache frequently-repeated analytics queries in-process
+// for a short TTL. Deliberately simple (module-level Map, single-instance only,
+// no invalidation on new orders) — good enough to absorb bursts of repeated
+// questions in one chat session without adding a distributed cache dependency.
+const SALES_METRICS_CACHE_TTL_MS = 60_000;
+const salesMetricsCache = new Map<string, { expiresAt: number; value: SalesMetrics }>();
+
+function salesMetricsCacheKey(shopId: string, timeRange: TimeRange | null): string {
+  return `${shopId}:${timeRange ? `${timeRange.from.getTime()}-${timeRange.to.getTime()}` : "all"}`;
+}
+
 /**
  * Minimal analytical retrieval: order count/revenue/AOV for a window.
  * Deliberately not the full Business Intelligence layer (spec §26) —
@@ -15,6 +26,12 @@ export type SalesMetrics = {
  * Just enough to make the Context Engine's analytical-retrieval slot real.
  */
 export async function getSalesMetrics(shopId: string, timeRange: TimeRange | null): Promise<SalesMetrics> {
+  const key = salesMetricsCacheKey(shopId, timeRange);
+  const cached = salesMetricsCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const aggregate = await db.order.aggregate({
     where: {
       shopId,
@@ -29,7 +46,9 @@ export async function getSalesMetrics(shopId: string, timeRange: TimeRange | nul
   const totalRevenue = aggregate._sum.totalPrice ? Number(aggregate._sum.totalPrice) : 0;
   const averageOrderValue = orderCount > 0 ? totalRevenue / orderCount : 0;
 
-  return { orderCount, totalRevenue, averageOrderValue, timeRange };
+  const value: SalesMetrics = { orderCount, totalRevenue, averageOrderValue, timeRange };
+  salesMetricsCache.set(key, { expiresAt: Date.now() + SALES_METRICS_CACHE_TTL_MS, value });
+  return value;
 }
 
 const SALES_VELOCITY_WINDOW_DAYS = 30;

@@ -4,6 +4,7 @@ import { recordEvent } from "../shopify-data/events.server";
 import { validateToolArgs, runTool } from "./tools/registry";
 import { saveMemory } from "../memory/memory.server";
 import { calibrateConfidence, findRecentNegativeOutcome } from "../intelligence/learning.server";
+import { recordMetric } from "../observability/metrics.server";
 import type { AdminGraphqlClient } from "../shopify-data/client.server";
 import type { ContextSource } from "../context/types";
 
@@ -122,12 +123,15 @@ export async function approveAction(shopId: string, actionId: string): Promise<A
     payload: { tool: action.tool },
     occurredAt: new Date(),
   });
+  recordMetric("recommendation.approved", 1, { shopId, metadata: { tool: action.tool } });
 
   return action;
 }
 
 export async function rejectAction(shopId: string, actionId: string): Promise<Action | null> {
-  return claimAction(shopId, actionId, "PENDING_APPROVAL", "REJECTED");
+  const action = await claimAction(shopId, actionId, "PENDING_APPROVAL", "REJECTED");
+  if (action) recordMetric("recommendation.rejected", 1, { shopId, metadata: { tool: action.tool } });
+  return action;
 }
 
 export type ExecuteActionResult =
@@ -161,6 +165,7 @@ export async function executeAction(
       payload: { tool: action.tool, success: true },
       occurredAt: new Date(),
     });
+    recordMetric("action.execution.success", 1, { shopId, metadata: { tool: action.tool } });
 
     return { outcome: "executed", action };
   } catch (error) {
@@ -178,6 +183,7 @@ export async function executeAction(
       payload: { tool: action.tool, success: false, error: message },
       occurredAt: new Date(),
     });
+    recordMetric("action.execution.failure", 1, { shopId, metadata: { tool: action.tool } });
 
     return { outcome: "failed", action, error: message };
   }

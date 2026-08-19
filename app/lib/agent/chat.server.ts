@@ -5,6 +5,7 @@ import { generateResponse } from "./respond.server";
 import { computeConfidence } from "./confidence.server";
 import { extractActionRequest } from "./action-extraction.server";
 import { extractMerchantPreference } from "./preference-extraction.server";
+import { summarizeConversation } from "./conversation-summary.server";
 import { prepareAction } from "./actions.server";
 import { selectAgent, checkCrossAgentConflicts, type AgentRole } from "./orchestrator.server";
 import type { ContextSource } from "../context/types";
@@ -135,6 +136,18 @@ async function handleChatMessageInner(input: HandleChatMessageInput): Promise<Ha
       intent: context.intent,
     },
   });
+
+  // Spec §31: regenerate the session summary every few turns, not every turn
+  // (an LLM call per message would double the session's cost for little gain).
+  const CONVERSATION_SUMMARY_INTERVAL = 6;
+  if (updatedMessages.length % CONVERSATION_SUMMARY_INTERVAL === 0) {
+    summarizeConversation(updatedMessages)
+      .then((summary) => {
+        if (!summary) return;
+        return db.conversationSession.update({ where: { id: session.id }, data: { summary } });
+      })
+      .catch((error) => console.error(`Failed to summarize conversation ${session.id}:`, error));
+  }
 
   return {
     sessionId: session.id,

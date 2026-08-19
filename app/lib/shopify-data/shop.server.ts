@@ -1,4 +1,17 @@
 import db from "../../db.server";
+import type { SyncFreshness } from "@prisma/client";
+
+const REALTIME_WINDOW_MS = 5 * 60 * 1000;
+const RECENT_WINDOW_MS = 60 * 60 * 1000;
+
+/** Spec §36 Data Freshness: derives current freshness from elapsed time since last sync, rather than trusting a static stored label forever. */
+export function computeFreshness(lastSyncedAt: Date | null): SyncFreshness {
+  if (!lastSyncedAt) return "UNKNOWN";
+  const ageMs = Date.now() - lastSyncedAt.getTime();
+  if (ageMs <= REALTIME_WINDOW_MS) return "REALTIME";
+  if (ageMs <= RECENT_WINDOW_MS) return "RECENT";
+  return "STALE";
+}
 
 export async function ensureShop(shopDomain: string) {
   return db.shop.upsert({

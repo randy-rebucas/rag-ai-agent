@@ -12,6 +12,8 @@ import {
   upsertCollectionFromGraphQLNode,
   upsertDiscountFromGraphQLNode,
 } from "./normalize.server";
+import { upsertProductMemory } from "../memory/product-memory.server";
+import { runInsightScan } from "../intelligence/insight-engine.server";
 
 /** Splits a bulk-operation JSONL result into top-level nodes and children keyed by __parentId. */
 function partitionByParent(nodes: any[]) {
@@ -66,10 +68,13 @@ async function syncProducts(shopId: string, admin: AdminGraphqlClient) {
 
   const { roots, childrenByParent } = partitionByParent(nodes);
   for (const product of roots) {
-    await upsertProductFromGraphQLNode(shopId, product);
+    const record = await upsertProductFromGraphQLNode(shopId, product);
     for (const variant of childrenByParent.get(product.id) ?? []) {
       await upsertVariantFromGraphQLNode(shopId, product.id, variant);
     }
+    // Spec §24's Initial Sync ends in Generate Embeddings — must run after
+    // variants exist, since the semantic document includes price/variant data.
+    await upsertProductMemory(shopId, record.id);
   }
 }
 
@@ -219,4 +224,12 @@ export async function runInitialSync(shopId: string, admin: AdminGraphqlClient) 
   await syncCollections(shopId, admin);
   await syncDiscounts(shopId, admin);
   await markSyncCompleted(shopId);
+
+  // Spec §24's Initial Sync pipeline's "Generate Intelligence" step — best-effort,
+  // must never fail the sync itself (structured data is already persisted by now).
+  try {
+    await runInsightScan(shopId);
+  } catch (error) {
+    console.error(`Initial insight scan failed for shop ${shopId}:`, error);
+  }
 }

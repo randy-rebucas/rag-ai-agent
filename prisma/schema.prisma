@@ -454,6 +454,20 @@ model ActionOutcomeStat {
   @@index([shopId])
 }
 
+// Spec §39 Observability: a minimal metrics stream (latency, token usage, tool
+// outcomes) — not a full metrics platform, just enough for the success-rate/cost
+// queries the spec calls out to be answerable from real data instead of nothing.
+model Metric {
+  id        String   @id @default(cuid())
+  shopId    String?
+  name      String
+  value     Float
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([shopId, name, createdAt])
+}
+
 // Raw bytes for an uploaded knowledge-base document, keyed by the same
 // entityId used on its DOCUMENT Memory chunks — lets a merchant re-download
 // what they uploaded. The extracted/embedded text lives in Memory, not here.

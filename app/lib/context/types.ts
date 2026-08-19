@@ -62,6 +62,8 @@ export type ContextPackage = {
   decisions: Array<Record<string, unknown>>;
   outcomes: Array<Record<string, unknown>>;
   sources: ContextSource[];
+  // Spec §36 Data Freshness — REALTIME | RECENT | STALE | UNKNOWN, derived from Shop.lastSyncedAt.
+  dataFreshness: "REALTIME" | "RECENT" | "STALE" | "UNKNOWN";
 };
 
 /** A normalized, scorable unit from any retrieval strategy, used only during ranking/budgeting. */

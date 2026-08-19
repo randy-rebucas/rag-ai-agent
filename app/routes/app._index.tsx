@@ -5,9 +5,10 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import type { HandleChatMessageResult } from "../lib/agent/chat.server";
-import { ensureShop } from "../lib/shopify-data/shop.server";
+import { ensureShop, computeFreshness } from "../lib/shopify-data/shop.server";
 import { computeKnowledgeLevel, type KnowledgeLevel } from "../lib/intelligence/knowledge-level.server";
 import { listDocuments, type DocumentSummary } from "../lib/memory/document-memory.server";
+import { PendingActionControls } from "../components/PendingActionControls";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -17,11 +18,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     listDocuments(shop.id),
   ]);
 
-  return { level, documents };
+  return {
+    level,
+    documents,
+    dataFreshness: computeFreshness(shop.lastSyncedAt),
+    lastSyncedAt: shop.lastSyncedAt ? shop.lastSyncedAt.toISOString() : null,
+  };
 };
 
 type ChatTurn = { role: "user" | "assistant"; content: string; agent?: string };
-type ActionStatusResult = { action?: { id: string; status: string }; error?: string };
 type ScanResult = { level: KnowledgeLevel };
 
 const PROMPT_CARDS = [
@@ -73,62 +78,21 @@ function computeRows(text: string): number {
   return Math.min(Math.max(lineBreaks, wrapped, MIN_ROWS), MAX_ROWS);
 }
 
-function PendingActionControls({ actionId, onResolved }: { actionId: string; onResolved: () => void }) {
-  const actionFetcher = useFetcher<ActionStatusResult>();
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const isBusy = actionFetcher.state !== "idle";
+const FRESHNESS_TONE = {
+  REALTIME: "success",
+  RECENT: "info",
+  STALE: "warning",
+  UNKNOWN: "neutral",
+} as const;
 
-  useEffect(() => {
-    if (!actionFetcher.data) return;
-    if (actionFetcher.data.error) {
-      setStatusMessage(`Failed: ${actionFetcher.data.error}`);
-      return;
-    }
-    const status = actionFetcher.data.action?.status;
-    if (status === "REJECTED") {
-      setStatusMessage("Action rejected.");
-      onResolved();
-    } else if (status === "APPROVED") {
-      // Approve succeeded — immediately request execution, closing the
-      // spec §21 loop (PREPARE -> APPROVAL -> EXECUTE) in one click.
-      actionFetcher.submit(null, { method: "POST", action: `/api/ai/actions/${actionId}/execute` });
-    } else if (status === "EXECUTED") {
-      setStatusMessage("Action executed successfully.");
-      onResolved();
-    } else if (status === "FAILED") {
-      setStatusMessage("Action approved but execution failed. See server logs.");
-      onResolved();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actionFetcher.data]);
-
-  if (statusMessage) {
-    return (
-      <s-box padding="base" borderWidth="base" borderRadius="base">
-        <s-text tone="neutral">{statusMessage}</s-text>
-      </s-box>
-    );
-  }
-
+function DataFreshnessBadge({ freshness, lastSyncedAt }: { freshness: string; lastSyncedAt: string | null }) {
   return (
-    <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
-      <s-stack direction="inline" gap="base" alignItems="center">
-        <s-text>This action needs your approval before it runs.</s-text>
-        <s-button
-          onClick={() => actionFetcher.submit(null, { method: "POST", action: `/api/ai/actions/${actionId}/approve` })}
-          {...(isBusy ? { loading: true } : {})}
-        >
-          Approve
-        </s-button>
-        <s-button
-          variant="tertiary"
-          onClick={() => actionFetcher.submit(null, { method: "POST", action: `/api/ai/actions/${actionId}/reject` })}
-          {...(isBusy ? { loading: true } : {})}
-        >
-          Reject
-        </s-button>
-      </s-stack>
-    </s-box>
+    <s-stack direction="block" gap="small-100">
+      <s-badge tone={FRESHNESS_TONE[freshness as keyof typeof FRESHNESS_TONE] ?? "neutral"}>{freshness}</s-badge>
+      <s-text tone="neutral">
+        {lastSyncedAt ? `Last synced ${new Date(lastSyncedAt).toLocaleString()}` : "Never synced"}
+      </s-text>
+    </s-stack>
   );
 }
 
@@ -345,7 +309,7 @@ function DocumentLibrary({ documents }: { documents: DocumentSummary[] }) {
 }
 
 export default function Index() {
-  const { level, documents } = useLoaderData<typeof loader>();
+  const { level, documents, dataFreshness, lastSyncedAt } = useLoaderData<typeof loader>();
   const chatFetcher = useFetcher<HandleChatMessageResult>();
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
@@ -514,6 +478,10 @@ export default function Index() {
           checks, and uploaded documents are chunked and embedded the same way, so the more you
           scan and upload, the more it understands.
         </s-paragraph>
+      </s-section>
+
+      <s-section slot="aside" heading="Data freshness">
+        <DataFreshnessBadge freshness={dataFreshness} lastSyncedAt={lastSyncedAt} />
       </s-section>
 
       <s-section slot="aside" heading="Knowledge level">
