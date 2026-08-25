@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import { authenticate, MONTHLY_PLAN } from "../shopify.server";
 import { ensureShop } from "../lib/shopify-data/shop.server";
 import { getShopAiSettings, saveShopAiSettings } from "../lib/ai/settings.server";
+
+const isTestCharge = process.env.NODE_ENV !== "production";
 
 const CHAT_MODEL_OPTIONS = [
   { value: "claude-sonnet-5", label: "Claude Sonnet 5 (recommended)" },
@@ -27,9 +29,11 @@ const EMBEDDING_MODEL_OPTIONS = [
 const MASKED = "••••••••••••••••";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, billing } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
   const settings = await getShopAiSettings(shop.id);
+  const { appSubscriptions } = await billing.check({ plans: [MONTHLY_PLAN], isTest: isTestCharge });
+  const subscription = appSubscriptions[0] ?? null;
 
   return {
     hasAnthropicKey: Boolean(settings.anthropicApiKey),
@@ -37,6 +41,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     chatModel: settings.chatModel ?? "",
     classifierModel: settings.classifierModel ?? "",
     embeddingModel: settings.embeddingModel ?? "",
+    subscription: subscription
+      ? {
+          name: subscription.name,
+          status: subscription.status,
+          test: subscription.test,
+          currentPeriodEnd: subscription.currentPeriodEnd,
+        }
+      : null,
   };
 };
 
@@ -64,11 +76,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { ok: true };
 };
 
+type CancelResult = { ok?: boolean; error?: string };
+
 export default function SettingsPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const cancelFetcher = useFetcher<CancelResult>();
   const shopify = useAppBridge();
   const isSaving = fetcher.state !== "idle";
+  const isCancelling = cancelFetcher.state !== "idle";
 
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
@@ -83,6 +99,18 @@ export default function SettingsPage() {
       setOpenaiApiKey("");
     }
   }, [fetcher.data, shopify]);
+
+  useEffect(() => {
+    if (cancelFetcher.data?.ok) {
+      shopify.toast.show("Subscription cancelled");
+    } else if (cancelFetcher.data?.error) {
+      shopify.toast.show(cancelFetcher.data.error, { isError: true });
+    }
+  }, [cancelFetcher.data, shopify]);
+
+  const cancelSubscription = () => {
+    cancelFetcher.submit(null, { method: "POST", action: "/api/billing/cancel" });
+  };
 
   const save = () => {
     const formData = new FormData();
@@ -99,7 +127,7 @@ export default function SettingsPage() {
       <s-section heading="Claude (chat &amp; reasoning)">
         <s-paragraph>
           Bring your own Anthropic API key to use your own billing and rate limits for chat
-          responses and intent classification. Leave blank to use the app's default key. Get a
+          responses and intent classification. Leave blank to use the app&apos;s default key. Get a
           key from the{" "}
           <s-link href="https://console.anthropic.com/settings/keys" target="_blank">
             Anthropic Console
@@ -151,7 +179,7 @@ export default function SettingsPage() {
       <s-section heading="OpenAI (embeddings)">
         <s-paragraph>
           Used only to generate embeddings for semantic memory search (Anthropic has no
-          embeddings API). Leave blank to use the app's default key. Get a key from the{" "}
+          embeddings API). Leave blank to use the app&apos;s default key. Get a key from the{" "}
           <s-link href="https://platform.openai.com/api-keys" target="_blank">
             OpenAI API keys page
           </s-link>
@@ -190,10 +218,55 @@ export default function SettingsPage() {
         Save
       </s-button>
 
+      <s-section heading="Plan">
+        {data.subscription ? (
+          <s-stack direction="block" gap="small-300">
+            <s-paragraph>
+              {data.subscription.name} — {data.subscription.status}
+              {data.subscription.test ? " (test charge)" : ""}. Renews{" "}
+              {new Date(data.subscription.currentPeriodEnd).toLocaleDateString()}.
+            </s-paragraph>
+            <s-button
+              variant="tertiary"
+              tone="critical"
+              onClick={cancelSubscription}
+              {...(isCancelling ? { loading: true } : {})}
+            >
+              Cancel subscription
+            </s-button>
+          </s-stack>
+        ) : (
+          <s-text tone="neutral">No active subscription.</s-text>
+        )}
+      </s-section>
+
       <s-section slot="aside" heading="About">
         <s-paragraph>
           These settings are stored per store and apply only to your account. API keys are
           never shown back to you once saved.
+        </s-paragraph>
+      </s-section>
+
+      <s-section slot="aside" heading="Legal">
+        <s-stack direction="block" gap="small-100">
+          <s-link href="/privacy" target="_blank">
+            Privacy Policy
+          </s-link>
+          <s-link href="/terms" target="_blank">
+            Terms of Service
+          </s-link>
+        </s-stack>
+      </s-section>
+
+      <s-section slot="aside" heading="Support">
+        <s-paragraph>
+          This app is built and supported by{" "}
+          <s-text tone="neutral">Devcom Digital Marketing Services</s-text>.
+          Questions or feedback? Reach us on{" "}
+          <s-link href="https://www.facebook.com/DevComDMS/" target="_blank">
+            Facebook
+          </s-link>
+          .
         </s-paragraph>
       </s-section>
     </s-page>

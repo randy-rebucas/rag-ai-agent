@@ -73,6 +73,13 @@ api_version = "2026-10"
   # uri = "/webhooks/fulfillments/upsert"
   # topics = [ "fulfillments/create", "fulfillments/update" ]
 
+  # Mandatory GDPR compliance webhooks — required for every Shopify app.
+  # These use a dedicated config block, not [[webhooks.subscriptions]].
+  [webhooks.privacy_compliance]
+  customer_data_request_url = "/webhooks/customers/data_request"
+  customer_deletion_url = "/webhooks/customers/redact"
+  shop_deletion_url = "/webhooks/shop/redact"
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
 

@@ -2,12 +2,18 @@ import "@shopify/shopify-app-react-router/adapters/node";
 import {
   ApiVersion,
   AppDistribution,
+  BillingInterval,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 import { ensureShop } from "./lib/shopify-data/shop.server";
 import { runInitialSync } from "./lib/shopify-data/sync.server";
+
+export const MONTHLY_PLAN = "Monthly subscription";
+// Merchants bring their own AI provider key, so this charge covers the app
+// itself — store sync, the RAG pipeline, action approvals — not AI usage.
+const MONTHLY_PLAN_TRIAL_DAYS = 7;
 
 // Spec §37 RBAC: every app/api.* route calls authenticate.admin(request), which
 // requires a valid Shopify staff session with app access. That IS this app's
@@ -24,6 +30,18 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
+  billing: {
+    [MONTHLY_PLAN]: {
+      lineItems: [
+        {
+          amount: 19.99,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days,
+        },
+      ],
+      trialDays: MONTHLY_PLAN_TRIAL_DAYS,
+    },
+  },
   future: {
     expiringOfflineAccessTokens: true,
   },

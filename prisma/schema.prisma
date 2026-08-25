@@ -304,6 +304,7 @@ enum EventType {
   AI_ACTION_APPROVED
   AI_ACTION_EXECUTED
   AI_OUTCOME_MEASURED
+  COMPLIANCE_REQUEST
 }
 
 // Immutable, append-only activity log. Never updated or deleted — only created.

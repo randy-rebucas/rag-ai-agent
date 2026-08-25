@@ -9,13 +9,15 @@ import { ensureShop, computeFreshness } from "../lib/shopify-data/shop.server";
 import { computeKnowledgeLevel, type KnowledgeLevel } from "../lib/intelligence/knowledge-level.server";
 import { listDocuments, type DocumentSummary } from "../lib/memory/document-memory.server";
 import { PendingActionControls } from "../components/PendingActionControls";
+import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
-  const [level, documents] = await Promise.all([
+  const [level, documents, conversationCount] = await Promise.all([
     computeKnowledgeLevel(shop.id),
     listDocuments(shop.id),
+    db.conversationSession.count({ where: { shopId: shop.id } }),
   ]);
 
   return {
@@ -23,45 +25,75 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     documents,
     dataFreshness: computeFreshness(shop.lastSyncedAt),
     lastSyncedAt: shop.lastSyncedAt ? shop.lastSyncedAt.toISOString() : null,
+    initialSyncDone: shop.initialSyncDone,
+    hasConversations: conversationCount > 0,
   };
 };
 
 type ChatTurn = { role: "user" | "assistant"; content: string; agent?: string };
 type ScanResult = { level: KnowledgeLevel };
 
+type SessionSummary = {
+  id: string;
+  summary: string | null;
+  preview: string;
+  messageCount: number;
+  updatedAt: string;
+};
+type SessionsResult = { sessions: SessionSummary[] };
+type SessionMessagesResult = {
+  sessionId: string;
+  messages: { role: "user" | "assistant"; content: string }[];
+  error?: string;
+};
+
+const CHAT_SESSION_STORAGE_KEY = "rag-ai-agent:chatSessionId";
+
 const PROMPT_CARDS = [
   {
     icon: "chart-line",
+    tone: "info",
+    background: "var(--p-color-bg-fill-info-secondary, #EAF2FF)",
     title: "Analyze recent sales",
     description: "Trends, revenue changes, and AOV",
     prompt: "Why are my sales down this week?",
   },
   {
     icon: "inventory",
+    tone: "success",
+    background: "var(--p-color-bg-fill-success-secondary, #E6F7ED)",
     title: "Check inventory risk",
     description: "Products at risk of stocking out",
     prompt: "Which products are at risk of stocking out?",
   },
   {
     icon: "chart-donut",
+    tone: "warning",
+    background: "var(--p-color-bg-fill-warning-secondary, #FFF4E5)",
     title: "Store performance overview",
     description: "A snapshot of how the store is doing",
     prompt: "How is my store performing overall?",
   },
   {
     icon: "person",
+    tone: "caution",
+    background: "var(--p-color-bg-fill-magic-secondary, #F1EAFB)",
     title: "Look up a customer",
     description: "Order history and spend",
     prompt: "Tell me about my top customer this month",
   },
   {
     icon: "product",
+    tone: "critical",
+    background: "var(--p-color-bg-fill-critical-secondary, #FDEAF3)",
     title: "Product performance",
     description: "Best and worst sellers",
     prompt: "Which products are my best sellers this month?",
   },
   {
     icon: "megaphone",
+    tone: "neutral",
+    background: "var(--p-color-bg-fill-secondary, #F1F2F3)",
     title: "Marketing ideas",
     description: "Suggestions to boost sales",
     prompt: "Suggest a marketing idea to boost sales this week",
@@ -119,7 +151,9 @@ function BrainLevel({ level }: { level: KnowledgeLevel }) {
         {level.memoryCount} memories from {level.productCount} products
       </s-text>
       <s-button
-        variant="tertiary"
+        variant="primary"
+        size="large"
+        inlineSize="fill"
         icon="refresh"
         onClick={() => scanFetcher.submit(null, { method: "POST", action: "/api/ai/scan" })}
         {...(isScanning ? { loading: true } : {})}
@@ -308,15 +342,155 @@ function DocumentLibrary({ documents }: { documents: DocumentSummary[] }) {
   );
 }
 
+type OnboardingStep = { label: string; done: boolean; action?: { label: string; onClick: () => void; loading: boolean } };
+
+function OnboardingChecklist({
+  initialSyncDone,
+  hasKnowledge,
+  hasDocuments,
+  hasConversations,
+}: {
+  initialSyncDone: boolean;
+  hasKnowledge: boolean;
+  hasDocuments: boolean;
+  hasConversations: boolean;
+}) {
+  const scanFetcher = useFetcher<ScanResult>();
+  const revalidator = useRevalidator();
+  const isScanning = scanFetcher.state !== "idle";
+
+  useEffect(() => {
+    if (scanFetcher.data) revalidator.revalidate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanFetcher.data]);
+
+  const steps: OnboardingStep[] = [
+    { label: "Sync your store data", done: initialSyncDone },
+    {
+      label: "Scan your store for insights",
+      done: hasKnowledge,
+      action: hasKnowledge
+        ? undefined
+        : {
+            label: "Scan store",
+            loading: isScanning,
+            onClick: () => scanFetcher.submit(null, { method: "POST", action: "/api/ai/scan" }),
+          },
+    },
+    { label: "Ask your first question", done: hasConversations },
+    { label: "Upload a document (optional)", done: hasDocuments },
+  ];
+
+  if (steps.every((step) => step.done)) return null;
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base">
+      <s-stack direction="block" gap="small-300">
+        <s-text>Getting started</s-text>
+        {steps.map((step) => (
+          <s-stack key={step.label} direction="inline" justifyContent="space-between" alignItems="center">
+            <s-stack direction="inline" gap="small-300" alignItems="center">
+              <s-icon type={step.done ? "check-circle" : "circle"} tone={step.done ? "success" : "neutral"} size="small" />
+              <s-text tone={step.done ? "neutral" : undefined}>{step.label}</s-text>
+            </s-stack>
+            {step.action && (
+              <s-button
+                variant="primary"
+                size="large"
+                onClick={step.action.onClick}
+                {...(step.action.loading ? { loading: true } : {})}
+              >
+                {step.action.label}
+              </s-button>
+            )}
+          </s-stack>
+        ))}
+      </s-stack>
+    </s-box>
+  );
+}
+
+function SessionHistory({
+  activeSessionId,
+  onResume,
+}: {
+  activeSessionId: string | undefined;
+  onResume: (sessionId: string) => void;
+}) {
+  const sessionsFetcher = useFetcher<SessionsResult>();
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      sessionsFetcher.load("/api/ai/sessions");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const sessions = sessionsFetcher.data?.sessions ?? [];
+
+  if (sessionsFetcher.state === "loading" && sessions.length === 0) {
+    return <s-text tone="neutral">Loading…</s-text>;
+  }
+
+  if (sessions.length === 0) {
+    return <s-text tone="neutral">No saved conversations yet.</s-text>;
+  }
+
+  return (
+    <s-stack direction="block" gap="small-300">
+      {sessions.map((s) => (
+        <s-box
+          key={s.id}
+          padding="small-300"
+          borderWidth="base"
+          borderRadius="base"
+          background={s.id === activeSessionId ? "strong" : undefined}
+        >
+          <s-stack direction="block" gap="small-100">
+            <s-text>{s.preview}</s-text>
+            <s-stack direction="inline" justifyContent="space-between" alignItems="center">
+              <s-text tone="neutral">{new Date(s.updatedAt).toLocaleString()}</s-text>
+              {s.id !== activeSessionId && (
+                <s-button variant="tertiary" onClick={() => onResume(s.id)}>
+                  Resume
+                </s-button>
+              )}
+            </s-stack>
+          </s-stack>
+        </s-box>
+      ))}
+    </s-stack>
+  );
+}
+
 export default function Index() {
-  const { level, documents, dataFreshness, lastSyncedAt } = useLoaderData<typeof loader>();
+  const { level, documents, dataFreshness, lastSyncedAt, initialSyncDone, hasConversations } =
+    useLoaderData<typeof loader>();
+  const shopify = useAppBridge();
   const chatFetcher = useFetcher<HandleChatMessageResult>();
+  const resumeFetcher = useFetcher<SessionMessagesResult>();
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
   const isSending = chatFetcher.state !== "idle";
   const bottomRef = useRef<HTMLDivElement>(null);
+  const didRestoreRef = useRef(false);
+
+  // Resume the last active session on load so a page refresh doesn't silently
+  // drop the merchant into a brand-new conversation.
+  useEffect(() => {
+    if (didRestoreRef.current) return;
+    didRestoreRef.current = true;
+    const storedSessionId = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+    if (storedSessionId) {
+      resumeFetcher.load(`/api/ai/sessions/${storedSessionId}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (chatFetcher.data) {
@@ -328,9 +502,30 @@ export default function Index() {
       if (chatFetcher.data.preparedActionId) {
         setPendingActionId(chatFetcher.data.preparedActionId);
       }
+      setHistoryKey((k) => k + 1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatFetcher.data]);
+
+  useEffect(() => {
+    if (!resumeFetcher.data) return;
+    if (resumeFetcher.data.error) {
+      // Stale/deleted session — drop it so we don't keep retrying on every load.
+      window.localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+      shopify.toast.show("Couldn't restore your last conversation — starting a new one.", { isError: true });
+      return;
+    }
+    setSessionId(resumeFetcher.data.sessionId);
+    setTurns(resumeFetcher.data.messages.map((m) => ({ role: m.role, content: m.content })));
+    setPendingActionId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeFetcher.data]);
+
+  useEffect(() => {
+    if (sessionId) {
+      window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, sessionId);
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -347,8 +542,24 @@ export default function Index() {
     chatFetcher.submit(formData, { method: "POST", action: "/api/ai/chat" });
   };
 
+  const resumeSession = (id: string) => {
+    if (isSending) return;
+    resumeFetcher.load(`/api/ai/sessions/${id}`);
+  };
+
   return (
     <s-page heading="AI store analyst">
+      {turns.length === 0 && (
+        <s-section>
+          <OnboardingChecklist
+            initialSyncDone={initialSyncDone}
+            hasKnowledge={level.score > 0}
+            hasDocuments={documents.length > 0}
+            hasConversations={hasConversations}
+          />
+        </s-section>
+      )}
+
       <s-section>
         <s-stack direction="block" gap="base">
           {turns.length === 0 ? (
@@ -439,35 +650,73 @@ export default function Index() {
                 variant="tertiary"
                 accessibilityLabel="Send message"
                 onClick={() => send(draft)}
+                disabled={!draft.trim()}
                 {...(isSending ? { loading: true } : {})}
               />
             </s-stack>
           </s-box>
 
-          <s-stack direction="inline" justifyContent="space-between" alignItems="center">
-            <s-stack direction="inline" gap="small-300" alignItems="center">
-              <s-icon type="circle" tone="success" size="small" />
-              <s-text tone="neutral">AI assistant ready</s-text>
-            </s-stack>
-            <s-text tone="neutral">AI can make mistakes. Verify important data.</s-text>
-          </s-stack>
-
           {turns.length === 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.75rem" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                gap: "0.75rem",
+                alignItems: "stretch",
+              }}
+            >
               {PROMPT_CARDS.map((card) => (
-                <s-button key={card.title} variant="tertiary" onClick={() => setDraft(card.prompt)}>
-                  <s-stack direction="inline" gap="small-300" alignItems="start">
-                    <s-icon type={card.icon} tone="info" />
-                    <s-stack direction="block" gap="small-100">
-                      <s-text>{card.title}</s-text>
-                      <s-text tone="neutral">{card.description}</s-text>
-                    </s-stack>
-                  </s-stack>
-                </s-button>
+                <s-box key={card.title} borderWidth="base" borderRadius="base" overflow="hidden">
+                  <button
+                    type="button"
+                    onClick={() => setDraft(card.prompt)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.75rem",
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: "0.75rem",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      font: "inherit",
+                      color: "inherit",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "grid",
+                        placeItems: "center",
+                        width: "28px",
+                        height: "28px",
+                        minWidth: "28px",
+                        maxHeight: "28px",
+                        flexShrink: 0,
+                        borderRadius: "8px",
+                        background: card.background,
+                        lineHeight: 0,
+                      }}
+                    >
+                      <s-icon type={card.icon} tone={card.tone} size="small" />
+                    </div>
+                    <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                      <s-stack direction="block" gap="small-100" alignItems="start">
+                        <s-text type="strong">{card.title}</s-text>
+                        <s-text tone="neutral">{card.description}</s-text>
+                      </s-stack>
+                    </div>
+                  </button>
+                </s-box>
               ))}
             </div>
           )}
         </s-stack>
+      </s-section>
+
+      <s-section heading="Conversation history">
+        <SessionHistory key={historyKey} activeSessionId={sessionId} onResume={resumeSession} />
       </s-section>
 
       <s-section slot="aside" heading="About">

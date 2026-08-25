@@ -3,10 +3,21 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
-import { authenticate } from "../shopify.server";
+import { authenticate, MONTHLY_PLAN } from "../shopify.server";
+
+const isTestCharge = process.env.NODE_ENV !== "production";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { billing } = await authenticate.admin(request);
+
+  // Every embedded route goes through this layout, so gating billing here
+  // covers the whole app in one place. onFailure throws the redirect to
+  // Shopify's subscription confirmation page.
+  await billing.require({
+    plans: [MONTHLY_PLAN],
+    isTest: isTestCharge,
+    onFailure: async () => billing.request({ plan: MONTHLY_PLAN, isTest: isTestCharge }),
+  });
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
