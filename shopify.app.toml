@@ -3,7 +3,7 @@
 client_id = "27a159bea3c7cc7217e2e2c169e2dfed"
 application_url = "https://example.com"
 embedded = true
-name = "rag-ai-agent"
+name = "Rag AI Agent"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes

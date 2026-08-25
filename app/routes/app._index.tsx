@@ -440,6 +440,16 @@ export default function Index() {
     resumeFetcher.load(`/api/ai/sessions/${id}`);
   };
 
+  const newChat = () => {
+    if (isSending) return;
+    setTurns([]);
+    setDraft("");
+    setSessionId(undefined);
+    setPendingActionId(null);
+    window.localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+    setHistoryKey((k) => k + 1);
+  };
+
   return (
     <s-page heading="AI store analyst">
       {turns.length === 0 && (
@@ -455,6 +465,14 @@ export default function Index() {
 
       <s-section>
         <s-stack direction="block" gap="base">
+          {turns.length > 0 && (
+            <s-stack direction="inline" justifyContent="space-between" alignItems="center">
+              <s-heading>Conversation</s-heading>
+              <s-button variant="tertiary" icon="chat-referral" onClick={newChat}>
+                New chat
+              </s-button>
+            </s-stack>
+          )}
           {turns.length === 0 ? (
             <s-stack direction="block" gap="small-300" alignItems="center">
               <s-heading>Welcome, how can I help?</s-heading>
