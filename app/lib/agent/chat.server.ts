@@ -12,6 +12,7 @@ import type { ContextSource } from "../context/types";
 import { getShopAiSettings } from "../ai/settings.server";
 import { runWithShopAiSettings } from "../ai/settings-context.server";
 import { saveMemory } from "../memory/memory.server";
+import { factsToCsv } from "../reports/csv.server";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -34,7 +35,10 @@ export type HandleChatMessageResult = {
   intent: string;
   preparedActionId: string | null;
   agent: AgentRole;
+  report: { id: string; filename: string; rowCount: number } | null;
 };
+
+const EXPORT_TRIGGER = /\b(export|download|csv|spreadsheet)\b/i;
 
 async function loadOrCreateSession(shopId: string, userId: string | undefined, sessionId: string | undefined) {
   if (sessionId) {
@@ -102,6 +106,32 @@ async function handleChatMessageInner(input: HandleChatMessageInput): Promise<Ha
     }
   }
 
+  // Only generate a report when the merchant actually asked to export/download
+  // something and this turn produced structured facts to export — never on
+  // every analysis reply.
+  let report: { id: string; filename: string; rowCount: number } | null = null;
+  if (EXPORT_TRIGGER.test(input.message) && context.facts.length > 0) {
+    try {
+      const { csv, rowCount } = factsToCsv(context.facts);
+      const bytes = Buffer.from(csv, "utf-8");
+      const filename = `${context.intent.toLowerCase()}-${Date.now()}.csv`;
+      const created = await db.chatReport.create({
+        data: {
+          shopId: input.shopId,
+          sessionId: session.id,
+          filename,
+          mimeType: "text/csv",
+          size: bytes.byteLength,
+          content: bytes,
+        },
+      });
+      report = { id: created.id, filename, rowCount };
+      reply += `\n\nI've put together a CSV export (${rowCount} row${rowCount === 1 ? "" : "s"}) — you can download it below.`;
+    } catch (error) {
+      console.error("Failed to generate chat report:", error);
+    }
+  }
+
   // Best-effort, non-blocking: a merchant preference is a nice-to-have signal,
   // never worth delaying or failing the chat reply over.
   extractMerchantPreference(input.message)
@@ -157,5 +187,6 @@ async function handleChatMessageInner(input: HandleChatMessageInput): Promise<Ha
     intent: context.intent,
     preparedActionId,
     agent,
+    report,
   };
 }

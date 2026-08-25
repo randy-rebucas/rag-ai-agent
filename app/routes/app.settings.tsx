@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate, MONTHLY_PLAN } from "../shopify.server";
 import { ensureShop } from "../lib/shopify-data/shop.server";
 import { getShopAiSettings, saveShopAiSettings } from "../lib/ai/settings.server";
+import db from "../db.server";
 
 const isTestCharge = process.env.NODE_ENV !== "production";
 
@@ -32,6 +33,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, billing } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
   const settings = await getShopAiSettings(shop.id);
+  const googleSettings = await db.shopSettings.findUnique({ where: { shopId: shop.id } });
   const { appSubscriptions } = await billing.check({ plans: [MONTHLY_PLAN], isTest: isTestCharge });
   const subscription = appSubscriptions[0] ?? null;
 
@@ -41,6 +43,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     chatModel: settings.chatModel ?? "",
     classifierModel: settings.classifierModel ?? "",
     embeddingModel: settings.embeddingModel ?? "",
+    shopDomain: session.shop,
+    googleConnected: Boolean(googleSettings?.googleRefreshToken),
+    googleEmail: googleSettings?.googleEmail ?? null,
     subscription: subscription
       ? {
           name: subscription.name,
@@ -78,13 +83,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 type CancelResult = { ok?: boolean; error?: string };
 
+type GoogleDisconnectResult = { ok?: boolean };
+
 export default function SettingsPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const cancelFetcher = useFetcher<CancelResult>();
+  const googleDisconnectFetcher = useFetcher<GoogleDisconnectResult>();
+  const revalidator = useRevalidator();
   const shopify = useAppBridge();
   const isSaving = fetcher.state !== "idle";
   const isCancelling = cancelFetcher.state !== "idle";
+  const isDisconnectingGoogle = googleDisconnectFetcher.state !== "idle";
 
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
@@ -110,6 +120,37 @@ export default function SettingsPage() {
 
   const cancelSubscription = () => {
     cancelFetcher.submit(null, { method: "POST", action: "/api/billing/cancel" });
+  };
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.data === "google-drive-connected") {
+        shopify.toast.show("Google Drive connected");
+        revalidator.revalidate();
+      } else if (event.data === "google-drive-error") {
+        shopify.toast.show("Couldn't connect Google Drive", { isError: true });
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (googleDisconnectFetcher.data?.ok) {
+      shopify.toast.show("Google Drive disconnected");
+      revalidator.revalidate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleDisconnectFetcher.data]);
+
+  const connectGoogleDrive = () => {
+    const url = `/auth/google?shop=${encodeURIComponent(data.shopDomain)}`;
+    window.open(url, "_blank", "width=520,height=640");
+  };
+
+  const disconnectGoogleDrive = () => {
+    googleDisconnectFetcher.submit(null, { method: "POST", action: "/api/google/disconnect" });
   };
 
   const save = () => {
@@ -217,6 +258,32 @@ export default function SettingsPage() {
       <s-button slot="primary-action" onClick={save} {...(isSaving ? { loading: true } : {})}>
         Save
       </s-button>
+
+      <s-section heading="Integrations">
+        <s-paragraph>
+          Connect Google Drive so CSV reports the AI generates in chat can be saved straight to
+          your Drive instead of only downloading them.
+        </s-paragraph>
+        {data.googleConnected ? (
+          <s-stack direction="block" gap="small-300">
+            <s-text>
+              Connected{data.googleEmail ? ` as ${data.googleEmail}` : ""}
+            </s-text>
+            <s-button
+              variant="tertiary"
+              tone="critical"
+              onClick={disconnectGoogleDrive}
+              {...(isDisconnectingGoogle ? { loading: true } : {})}
+            >
+              Disconnect
+            </s-button>
+          </s-stack>
+        ) : (
+          <s-button variant="primary" onClick={connectGoogleDrive}>
+            Connect Google Drive
+          </s-button>
+        )}
+      </s-section>
 
       <s-section heading="Plan">
         {data.subscription ? (

@@ -7,30 +7,33 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import type { HandleChatMessageResult } from "../lib/agent/chat.server";
 import { ensureShop, computeFreshness } from "../lib/shopify-data/shop.server";
 import { computeKnowledgeLevel, type KnowledgeLevel } from "../lib/intelligence/knowledge-level.server";
-import { listDocuments, type DocumentSummary } from "../lib/memory/document-memory.server";
+import { listDocuments } from "../lib/memory/document-memory.server";
 import { PendingActionControls } from "../components/PendingActionControls";
 import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop);
-  const [level, documents, conversationCount] = await Promise.all([
+  const [level, documents, conversationCount, settings] = await Promise.all([
     computeKnowledgeLevel(shop.id),
     listDocuments(shop.id),
     db.conversationSession.count({ where: { shopId: shop.id } }),
+    db.shopSettings.findUnique({ where: { shopId: shop.id } }),
   ]);
 
   return {
     level,
-    documents,
+    hasDocuments: documents.length > 0,
     dataFreshness: computeFreshness(shop.lastSyncedAt),
     lastSyncedAt: shop.lastSyncedAt ? shop.lastSyncedAt.toISOString() : null,
     initialSyncDone: shop.initialSyncDone,
     hasConversations: conversationCount > 0,
+    googleConnected: Boolean(settings?.googleRefreshToken),
   };
 };
 
-type ChatTurn = { role: "user" | "assistant"; content: string; agent?: string };
+type ChatReport = { id: string; filename: string; rowCount: number };
+type ChatTurn = { role: "user" | "assistant"; content: string; agent?: string; report?: ChatReport | null };
 type ScanResult = { level: KnowledgeLevel };
 
 type SessionSummary = {
@@ -164,184 +167,6 @@ function BrainLevel({ level }: { level: KnowledgeLevel }) {
   );
 }
 
-type DocumentUploadResult = {
-  document?: { entityId: string; chunkCount: number; truncated: boolean };
-  level?: KnowledgeLevel;
-  error?: string;
-};
-type DocumentDeleteResult = { level?: KnowledgeLevel };
-
-type UploadStage = "uploading" | "processing" | null;
-
-function DocumentLibrary({ documents }: { documents: DocumentSummary[] }) {
-  const deleteFetcher = useFetcher<DocumentDeleteResult>();
-  const shopify = useAppBridge();
-  const revalidator = useRevalidator();
-  const [uploadStage, setUploadStage] = useState<UploadStage>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadFilename, setUploadFilename] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (deleteFetcher.data) {
-      shopify.toast.show("Document removed");
-      revalidator.revalidate();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deleteFetcher.data]);
-
-  const uploadFile = async (file: File) => {
-    setUploadFilename(file.name);
-    setUploadProgress(0);
-    setUploadStage("uploading");
-
-    // Embedded admin requests must carry a fresh Shopify session token —
-    // App Bridge only attaches this automatically to window.fetch, not to
-    // XMLHttpRequest, so it has to be fetched and set explicitly here.
-    let token: string;
-    try {
-      token = await shopify.idToken();
-    } catch {
-      setUploadStage(null);
-      setUploadFilename(null);
-      shopify.toast.show("Couldn't authenticate the upload — please reload the page.", { isError: true });
-      return;
-    }
-
-    const formData = new FormData();
-    formData.set("file", file);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/ai/documents");
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        setUploadProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-    xhr.upload.onload = () => setUploadStage("processing");
-    xhr.onload = () => {
-      setUploadStage(null);
-      setUploadFilename(null);
-      let result: DocumentUploadResult = {};
-      try {
-        result = JSON.parse(xhr.responseText);
-      } catch {
-        result = { error: "Upload failed — the server sent an unreadable response." };
-      }
-      if (xhr.status >= 400 || result.error) {
-        shopify.toast.show(result.error ?? "Upload failed.", { isError: true });
-        return;
-      }
-      if (result.document) {
-        const { chunkCount, truncated } = result.document;
-        const suffix = truncated ? " (only the first part of this file was used — it was very long)" : "";
-        shopify.toast.show(`Learned ${chunkCount} passage${chunkCount === 1 ? "" : "s"} from your document${suffix}`);
-        revalidator.revalidate();
-      }
-    };
-    xhr.onerror = () => {
-      setUploadStage(null);
-      setUploadFilename(null);
-      shopify.toast.show("Upload failed — check your connection and try again.", { isError: true });
-    };
-    xhr.send(formData);
-  };
-
-  return (
-    <s-stack direction="block" gap="base">
-      <s-drop-zone
-        label="Upload a document"
-        labelAccessibilityVisibility="exclusive"
-        accept=".txt,.md,.csv,.pdf,.docx,text/plain,text/markdown,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        disabled={uploadStage !== null}
-        onChange={(e) => {
-          const file = e.currentTarget.files[0];
-          if (file) uploadFile(file);
-        }}
-      >
-        <s-stack direction="block" gap="small-300" alignItems="center">
-          <s-icon type="upload" tone="info" />
-          <s-text tone="neutral">
-            {uploadStage === null
-              ? "Drop a .txt, .md, .csv, .pdf, or .docx file, or click to browse"
-              : uploadFilename}
-          </s-text>
-        </s-stack>
-      </s-drop-zone>
-
-      {uploadStage !== null && (
-        <s-stack direction="block" gap="small-100">
-          <div
-            style={{
-              height: "6px",
-              borderRadius: "999px",
-              background: "var(--p-color-bg-surface-secondary, #e3e3e3)",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                height: "100%",
-                width: "100%",
-                borderRadius: "999px",
-                background: "var(--p-color-bg-fill-info, #2c6ecb)",
-                transform: `scaleX(${uploadStage === "uploading" ? uploadProgress / 100 : 1})`,
-                transformOrigin: "left",
-                transition: "transform 150ms ease-out",
-              }}
-            />
-          </div>
-          <s-text tone="neutral">
-            {uploadStage === "uploading" ? `Uploading… ${uploadProgress}%` : "Learning from your document…"}
-          </s-text>
-        </s-stack>
-      )}
-
-      {documents.length === 0 ? (
-        <s-text tone="neutral">No documents uploaded yet.</s-text>
-      ) : (
-        <s-stack direction="block" gap="small-300">
-          {documents.map((doc) => (
-            <s-box key={doc.entityId} padding="small-300" borderWidth="base" borderRadius="base">
-              <s-stack direction="inline" justifyContent="space-between" alignItems="center">
-                <s-stack direction="block" gap="small-100">
-                  <s-text>{doc.filename}</s-text>
-                  <s-text tone="neutral">
-                    {doc.chunkCount} passage{doc.chunkCount === 1 ? "" : "s"}
-                    {!doc.downloadable && " · uploaded before file storage, no download available"}
-                  </s-text>
-                </s-stack>
-                <s-stack direction="inline" gap="small-100">
-                  {doc.downloadable && (
-                    <s-button
-                      variant="tertiary"
-                      icon="download"
-                      accessibilityLabel={`Download ${doc.filename}`}
-                      href={`/api/ai/documents/${encodeURIComponent(doc.entityId)}/download`}
-                      target="_blank"
-                    />
-                  )}
-                  <s-button
-                    variant="tertiary"
-                    icon="delete"
-                    accessibilityLabel={`Remove ${doc.filename}`}
-                    onClick={() =>
-                      deleteFetcher.submit(
-                        { entityId: doc.entityId },
-                        { method: "DELETE", action: "/api/ai/documents", encType: "application/json" },
-                      )
-                    }
-                  />
-                </s-stack>
-              </s-stack>
-            </s-box>
-          ))}
-        </s-stack>
-      )}
-    </s-stack>
-  );
-}
-
 type OnboardingStep = { label: string; done: boolean; action?: { label: string; onClick: () => void; loading: boolean } };
 
 function OnboardingChecklist({
@@ -356,16 +181,33 @@ function OnboardingChecklist({
   hasConversations: boolean;
 }) {
   const scanFetcher = useFetcher<ScanResult>();
+  const syncFetcher = useFetcher();
   const revalidator = useRevalidator();
   const isScanning = scanFetcher.state !== "idle";
+  const isSyncing = syncFetcher.state !== "idle";
 
   useEffect(() => {
     if (scanFetcher.data) revalidator.revalidate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanFetcher.data]);
 
+  useEffect(() => {
+    if (syncFetcher.data) revalidator.revalidate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncFetcher.data]);
+
   const steps: OnboardingStep[] = [
-    { label: "Sync your store data", done: initialSyncDone },
+    {
+      label: "Sync your store data",
+      done: initialSyncDone,
+      action: initialSyncDone
+        ? undefined
+        : {
+            label: "Sync store",
+            loading: isSyncing,
+            onClick: () => syncFetcher.submit(null, { method: "POST", action: "/api/store/sync" }),
+          },
+    },
     {
       label: "Scan your store for insights",
       done: hasKnowledge,
@@ -465,8 +307,54 @@ function SessionHistory({
   );
 }
 
+type DriveSaveResult = { ok?: boolean; webViewLink?: string | null; error?: string };
+
+function ReportActions({ report, googleConnected }: { report: ChatReport; googleConnected: boolean }) {
+  const saveFetcher = useFetcher<DriveSaveResult>();
+  const shopify = useAppBridge();
+  const isSaving = saveFetcher.state !== "idle";
+
+  useEffect(() => {
+    if (!saveFetcher.data) return;
+    if (saveFetcher.data.error) {
+      shopify.toast.show(saveFetcher.data.error, { isError: true });
+    } else if (saveFetcher.data.ok) {
+      shopify.toast.show("Saved to Google Drive");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveFetcher.data]);
+
+  return (
+    <s-stack direction="inline" gap="small-300">
+      <s-button
+        variant="tertiary"
+        icon="download"
+        href={`/api/ai/reports/${encodeURIComponent(report.id)}/download`}
+        target="_blank"
+      >
+        Download CSV
+      </s-button>
+      {googleConnected ? (
+        <s-button
+          variant="tertiary"
+          onClick={() =>
+            saveFetcher.submit(null, { method: "POST", action: `/api/google/reports/${report.id}/save` })
+          }
+          {...(isSaving ? { loading: true } : {})}
+        >
+          Save to Drive
+        </s-button>
+      ) : (
+        <s-text tone="neutral">
+          <s-link href="/app/settings">Connect Google Drive</s-link> to save reports there.
+        </s-text>
+      )}
+    </s-stack>
+  );
+}
+
 export default function Index() {
-  const { level, documents, dataFreshness, lastSyncedAt, initialSyncDone, hasConversations } =
+  const { level, hasDocuments, dataFreshness, lastSyncedAt, initialSyncDone, hasConversations, googleConnected } =
     useLoaderData<typeof loader>();
   const shopify = useAppBridge();
   const chatFetcher = useFetcher<HandleChatMessageResult>();
@@ -497,7 +385,12 @@ export default function Index() {
       setSessionId(chatFetcher.data.sessionId);
       setTurns((prev) => [
         ...prev,
-        { role: "assistant", content: chatFetcher.data!.reply, agent: chatFetcher.data!.agent },
+        {
+          role: "assistant",
+          content: chatFetcher.data!.reply,
+          agent: chatFetcher.data!.agent,
+          report: chatFetcher.data!.report,
+        },
       ]);
       if (chatFetcher.data.preparedActionId) {
         setPendingActionId(chatFetcher.data.preparedActionId);
@@ -554,7 +447,7 @@ export default function Index() {
           <OnboardingChecklist
             initialSyncDone={initialSyncDone}
             hasKnowledge={level.score > 0}
-            hasDocuments={documents.length > 0}
+            hasDocuments={hasDocuments}
             hasConversations={hasConversations}
           />
         </s-section>
@@ -583,6 +476,7 @@ export default function Index() {
                       {isMerchant ? "You" : turn.agent ?? "AI"}
                     </s-text>
                     <s-text>{turn.content}</s-text>
+                    {turn.report && <ReportActions report={turn.report} googleConnected={googleConnected} />}
                   </s-stack>
                 </s-box>
               );
@@ -738,7 +632,12 @@ export default function Index() {
       </s-section>
 
       <s-section slot="aside" heading="Documents">
-        <DocumentLibrary documents={documents} />
+        <s-stack direction="block" gap="small-300">
+          <s-text tone="neutral">
+            {hasDocuments ? "Manage your uploaded documents." : "No documents uploaded yet."}
+          </s-text>
+          <s-link href="/app/documents">Go to Documents</s-link>
+        </s-stack>
       </s-section>
     </s-page>
   );

@@ -62,15 +62,19 @@ model Shop {
 // app-wide env var default (see app/lib/ai/settings.server.ts) — a merchant
 // only needs to fill in what they want to override, e.g. bring their own key.
 model ShopSettings {
-  id               String   @id @default(cuid())
-  shopId           String   @unique
-  anthropicApiKey  String?
-  openaiApiKey     String?
-  chatModel        String?
-  classifierModel  String?
-  embeddingModel   String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                    String    @id @default(cuid())
+  shopId                String    @unique
+  anthropicApiKey       String?
+  openaiApiKey          String?
+  chatModel             String?
+  classifierModel       String?
+  embeddingModel        String?
+  googleAccessToken     String?
+  googleRefreshToken    String?
+  googleTokenExpiresAt  DateTime?
+  googleEmail           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 }
@@ -484,4 +488,19 @@ model Document {
   updatedAt DateTime @updatedAt
 
   @@unique([shopId, entityId])
+}
+
+// AI-generated exports offered as chat attachments (e.g. "export my best
+// sellers as csv") — separate from Document, which is merchant-uploaded
+// knowledge that gets chunked/embedded. Reports are just raw bytes to
+// download or push to Drive.
+model ChatReport {
+  id        String   @id @default(cuid())
+  shopId    String
+  sessionId String?
+  filename  String
+  mimeType  String
+  size      Int
+  content   Bytes
+  createdAt DateTime @default(now())
 }
