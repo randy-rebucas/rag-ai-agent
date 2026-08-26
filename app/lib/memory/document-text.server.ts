@@ -1,5 +1,57 @@
-import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
+
+// pdfjs-dist (used internally by pdf-parse) references DOMMatrix/ImageData/Path2D
+// at module load time. In serverless Node runtimes these DOM globals don't exist
+// and there's no native canvas package installed, so the import crashes the
+// whole function before any code runs. These are text-extraction-only stubs —
+// just enough for the module to load; we never render, so fidelity doesn't matter.
+const g = globalThis as unknown as Record<string, unknown>;
+
+if (typeof g.DOMMatrix === "undefined") {
+  g.DOMMatrix = class DOMMatrix {
+    a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
+    constructor(_init?: unknown) {}
+    multiply() { return new (g.DOMMatrix as new () => unknown)(); }
+    inverse() { return new (g.DOMMatrix as new () => unknown)(); }
+    translate() { return new (g.DOMMatrix as new () => unknown)(); }
+    scale() { return new (g.DOMMatrix as new () => unknown)(); }
+  };
+}
+
+if (typeof g.ImageData === "undefined") {
+  g.ImageData = class ImageData {
+    data: Uint8ClampedArray;
+    width: number;
+    height: number;
+    constructor(dataOrWidth: Uint8ClampedArray | number, widthOrHeight: number, height?: number) {
+      if (typeof dataOrWidth === "number") {
+        this.width = dataOrWidth;
+        this.height = widthOrHeight;
+        this.data = new Uint8ClampedArray(this.width * this.height * 4);
+      } else {
+        this.data = dataOrWidth;
+        this.width = widthOrHeight;
+        this.height = height ?? 0;
+      }
+    }
+  };
+}
+
+if (typeof g.Path2D === "undefined") {
+  g.Path2D = class Path2D {
+    constructor(_path?: unknown) {}
+    addPath() {}
+    closePath() {}
+    moveTo() {}
+    lineTo() {}
+    bezierCurveTo() {}
+    quadraticCurveTo() {}
+    arc() {}
+    arcTo() {}
+    ellipse() {}
+    rect() {}
+  };
+}
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const LEGACY_DOC_MIME = "application/msword";
@@ -30,6 +82,7 @@ export async function extractDocumentText(
   }
 
   if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
+    const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: buffer });
     try {
       const result = await parser.getText();
