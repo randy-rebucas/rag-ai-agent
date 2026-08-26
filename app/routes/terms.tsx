@@ -32,6 +32,18 @@ export default function Terms() {
       </section>
 
       <section style={SECTION_STYLE}>
+        <h2>Subscription and billing</h2>
+        <p>
+          The app is billed at $19.99 USD per 30 days through Shopify&apos;s Billing API, with a
+          7-day free trial for new installs. Your card is managed by Shopify, not by us — we never
+          see your payment details. Subscriptions renew automatically every 30 days until
+          cancelled; there are no refunds for a partial billing period. If we change the price, we
+          will give notice before the change takes effect, and continued use after that date
+          constitutes acceptance of the new price.
+        </p>
+      </section>
+
+      <section style={SECTION_STYLE}>
         <h2>Your API keys</h2>
         <p>
           If you configure your own Anthropic or OpenAI API key in Settings, usage is billed by
@@ -51,8 +63,9 @@ export default function Terms() {
       <section style={SECTION_STYLE}>
         <h2>Termination</h2>
         <p>
-          You may uninstall the app at any time from your Shopify admin. Upon uninstallation, your
-          data is deleted per our <a href="/privacy">Privacy Policy</a>.
+          You may cancel your subscription or uninstall the app at any time from your Shopify
+          admin. Cancelling stops future billing; it does not refund the current period. Upon
+          uninstallation, your data is deleted per our <a href="/privacy">Privacy Policy</a>.
         </p>
       </section>
 
