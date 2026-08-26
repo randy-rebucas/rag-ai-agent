@@ -75,3 +75,33 @@ export async function getImpactSummary(shopId: string): Promise<ImpactSummary> {
     estimatedMinutesSaved: actionsExecuted * MINUTES_SAVED_PER_ACTION,
   };
 }
+
+export type UsageSummary = {
+  totalSessions: number;
+  totalMessages: number;
+  usersInteracted: number;
+};
+
+/** App-usage analytics for the Activity page: how much the chat is actually being used. */
+export async function getUsageSummary(shopId: string): Promise<UsageSummary> {
+  const [totalSessions, sessions, distinctUsers] = await Promise.all([
+    db.conversationSession.count({ where: { shopId } }),
+    db.conversationSession.findMany({ where: { shopId }, select: { messages: true } }),
+    db.conversationSession.findMany({
+      where: { shopId, userId: { not: null } },
+      distinct: ["userId"],
+      select: { userId: true },
+    }),
+  ]);
+
+  const totalMessages = sessions.reduce(
+    (sum, session) => sum + (Array.isArray(session.messages) ? session.messages.length : 0),
+    0,
+  );
+
+  return {
+    totalSessions,
+    totalMessages,
+    usersInteracted: distinctUsers.length,
+  };
+}

@@ -9,7 +9,31 @@ import { ensureShop, computeFreshness } from "../lib/shopify-data/shop.server";
 import { computeKnowledgeLevel, type KnowledgeLevel } from "../lib/intelligence/knowledge-level.server";
 import { listDocuments } from "../lib/memory/document-memory.server";
 import { PendingActionControls } from "../components/PendingActionControls";
+import { QuickTour, hasSeenTour, type TourStep } from "../components/QuickTour";
 import db from "../db.server";
+
+const TOUR_STEPS: TourStep[] = [
+  {
+    selector: '[data-tour="chat-input"]',
+    title: "Ask anything about your store",
+    body: "Sales trends, inventory risk, customer history, pricing — ask in plain language and get an answer grounded in your real store data.",
+  },
+  {
+    selector: '[data-tour="prompt-cards"]',
+    title: "Or start from a suggestion",
+    body: "Tap one of these to try a common question instantly.",
+  },
+  {
+    selector: '[data-tour="scan-store"]',
+    title: "Keep its knowledge fresh",
+    body: "Scan store rebuilds the AI's memory from your synced data and re-runs its insight checks. Run it whenever this score feels out of date.",
+  },
+  {
+    selector: '[data-tour="documents-card"]',
+    title: "Teach it with documents",
+    body: "Upload reference files here and the assistant can draw on them when answering your questions.",
+  },
+];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -154,8 +178,8 @@ function BrainLevel({ level }: { level: KnowledgeLevel }) {
         {level.memoryCount} memories from {level.productCount} products
       </s-text>
       <s-button
+        data-tour="scan-store"
         variant="primary"
-        size="large"
         inlineSize="fill"
         icon="refresh"
         onClick={() => scanFetcher.submit(null, { method: "POST", action: "/api/ai/scan" })}
@@ -238,7 +262,6 @@ function OnboardingChecklist({
             {step.action && (
               <s-button
                 variant="primary"
-                size="large"
                 onClick={step.action.onClick}
                 {...(step.action.loading ? { loading: true } : {})}
               >
@@ -367,6 +390,7 @@ export default function Index() {
   const isSending = chatFetcher.state !== "idle";
   const bottomRef = useRef<HTMLDivElement>(null);
   const didRestoreRef = useRef(false);
+  const [tourActive, setTourActive] = useState(false);
 
   // Resume the last active session on load so a page refresh doesn't silently
   // drop the merchant into a brand-new conversation.
@@ -378,6 +402,11 @@ export default function Index() {
       resumeFetcher.load(`/api/ai/sessions/${storedSessionId}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-start the quick tour on a merchant's first visit only.
+  useEffect(() => {
+    if (!hasSeenTour()) setTourActive(true);
   }, []);
 
   useEffect(() => {
@@ -450,9 +479,17 @@ export default function Index() {
     setHistoryKey((k) => k + 1);
   };
 
+  const onboardingDone = initialSyncDone && level.score > 0 && hasDocuments && hasConversations;
+
   return (
     <s-page heading="AI store analyst">
-      {turns.length === 0 && (
+      <s-button slot="secondary-actions" variant="secondary" icon="lightbulb" onClick={() => setTourActive(true)}>
+        Take a tour
+      </s-button>
+
+      <QuickTour steps={TOUR_STEPS} active={tourActive} onFinish={() => setTourActive(false)} />
+
+      {turns.length === 0 && !onboardingDone && (
         <s-section>
           <OnboardingChecklist
             initialSyncDone={initialSyncDone}
@@ -545,7 +582,7 @@ export default function Index() {
 
           <div ref={bottomRef} />
 
-          <s-box padding="small-300" borderWidth="base" borderRadius="large-200">
+          <s-box data-tour="chat-input" padding="small-300" borderWidth="base" borderRadius="large-200">
             <s-stack direction="inline" gap="small-300" alignItems="center">
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
                 <s-text-area
@@ -570,6 +607,7 @@ export default function Index() {
 
           {turns.length === 0 && (
             <div
+              data-tour="prompt-cards"
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
@@ -649,7 +687,7 @@ export default function Index() {
         <BrainLevel level={level} />
       </s-section>
 
-      <s-section slot="aside" heading="Documents">
+      <s-section data-tour="documents-card" slot="aside" heading="Documents">
         <s-stack direction="block" gap="small-300">
           <s-text tone="neutral">
             {hasDocuments ? "Manage your uploaded documents." : "No documents uploaded yet."}

@@ -3,7 +3,7 @@ import { useLoaderData, useRevalidator, useSearchParams, useRouteError, Link } f
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { ensureShop } from "../lib/shopify-data/shop.server";
-import { getActivityHistory, getImpactSummary } from "../lib/shopify-data/activity.server";
+import { getActivityHistory, getImpactSummary, getUsageSummary } from "../lib/shopify-data/activity.server";
 import { PendingActionControls } from "../components/PendingActionControls";
 import db from "../db.server";
 
@@ -18,7 +18,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const actionsPage = Math.max(1, Number(url.searchParams.get("actionsPage") ?? "1") || 1);
   const eventsPage = Math.max(1, Number(url.searchParams.get("eventsPage") ?? "1") || 1);
 
-  const [pendingActions, recentActions, recentActionsTotal, insights, events, eventsTotal, impact] =
+  const [pendingActions, recentActions, recentActionsTotal, insights, events, eventsTotal, impact, usage] =
     await Promise.all([
       db.action.findMany({
         where: { shopId: shop.id, status: "PENDING_APPROVAL" },
@@ -42,6 +42,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       getActivityHistory(shop.id, { limit: PAGE_SIZE, skip: (eventsPage - 1) * PAGE_SIZE }),
       db.event.count({ where: { shopId: shop.id } }),
       getImpactSummary(shop.id),
+      getUsageSummary(shop.id),
     ]);
 
   return {
@@ -54,6 +55,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     eventsTotal,
     eventsPage,
     impact,
+    usage,
   };
 };
 
@@ -100,6 +102,7 @@ export default function Activity() {
     eventsTotal,
     eventsPage,
     impact,
+    usage,
   } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const [searchParams] = useSearchParams();
@@ -126,6 +129,12 @@ export default function Activity() {
     { label: "Est. time saved", value: `${impact.estimatedMinutesSaved} min` },
   ];
 
+  const usageTiles: { label: string; value: string }[] = [
+    { label: "Total sessions", value: String(usage.totalSessions) },
+    { label: "Total messages", value: String(usage.totalMessages) },
+    { label: "Users interacted", value: String(usage.usersInteracted) },
+  ];
+
   return (
     <s-page heading="Activity">
       <s-section heading="Impact">
@@ -145,6 +154,19 @@ export default function Activity() {
             not a measured figure.
           </s-text>
         )}
+      </s-section>
+
+      <s-section heading="App usage">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem" }}>
+          {usageTiles.map((tile) => (
+            <s-box key={tile.label} padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small-100">
+                <s-text tone="neutral">{tile.label}</s-text>
+                <s-heading>{tile.value}</s-heading>
+              </s-stack>
+            </s-box>
+          ))}
+        </div>
       </s-section>
 
       <s-section heading="Needs your approval">
